@@ -1,0 +1,4 @@
+httpx>=0.27
+selectolax>=0.3.21
+protego>=0.3
+playwright>=1.44
