@@ -42,146 +42,79 @@ htmlcov/
 .dmypy.json
 .pyre/
 
-
 # =========================
 # Virtual Environment
 # =========================
-
 .venv/
 venv/
 env/
 ENV/
-
-# Poetry
 poetry.lock
-
-# Pipenv
 Pipfile.lock
-
 
 # =========================
 # Environment Variables
 # =========================
-
 .env
 .env.*
 !.env.example
 
-
-# =========================
 # IDE / Editor
-# =========================
-
-# VS Code
 .vscode/
-
-# PyCharm
 .idea/
-
-# MacOS
-.DS_Store
-
-# Vim
 *.swp
 *.swo
 
-
-# =========================
 # Jupyter Notebook
-# =========================
-
 .ipynb_checkpoints/
 
-
-# =========================
 # Logs
-# =========================
-
 *.log
 logs/
 
-
-# =========================
 # Database
-# =========================
-
-# SQLite
 *.sqlite
 *.sqlite3
 *.db
-
-# Local databases
 database/
 databases/
 
-
-# =========================
 # AI / ML / Data
-# =========================
-
-# Model weights
 *.pt
 *.pth
 *.bin
 *.onnx
 *.h5
 *.keras
-
-# HuggingFace cache
 .cache/
 huggingface_cache/
-
-# ML experiments
 wandb/
 mlruns/
-
-# Vector databases
 chroma/
 chromadb/
 *.parquet
 
+# Crawler output
+data/*
+!data/.gitkeep
+scraped_data/
+crawl_data/
+downloads/
+tmp/
+temp/
 
-# =========================
-# Data files
-# =========================
-
-# Raw datasets
-data/raw/
-data/processed/
-
+# Export files
 *.csv
 *.xlsx
 *.xls
 *.jsonl
 
-
-# =========================
-# Scraping / Crawling
-# =========================
-
-# Crawled pages
-scraped_data/
-crawl_data/
-downloads/
-
-# Temporary files
-tmp/
-temp/
-
-
-# =========================
 # Secrets / Credentials
-# =========================
-
 *.pem
 *.key
 credentials.json
 service-account.json
 
-
-# =========================
 # OS Generated
-# =========================
-
 Thumbs.db
 .DS_Store
