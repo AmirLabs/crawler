@@ -83,6 +83,10 @@ WALL_MAX_LINKS = 10
 # Enough to estimate the real page count without downloading the whole site map.
 MAX_CHILD_SITEMAPS_TO_READ = 5
 
+# Words in a WordPress post-type slug that suggest it holds tour listings.
+# Checked against the types the site reports, so custom names are found too.
+TOUR_POST_TYPE_WORDS = ("tour", "package", "product", "travel", "trip")
+
 
 def _normalize_domain(domain: str) -> str:
     """Make sure the domain has a scheme (http/https)."""
@@ -188,7 +192,8 @@ def _find_wp_api_root(html: str, base: str) -> str:
 
     WordPress advertises it via ``<link rel="https://api.w.org/" href="...">``.
     Trusting that tag handles installs living in a subdirectory, which a plain
-    ``base + /wp-json/`` guess would miss.
+    ``base + /wp-json/`` guess would miss. The href is often site-relative, so
+    it is resolved against ``base`` before being returned.
     """
     m = re.search(
         r'<link[^>]+rel=["\']https://api\.w\.org/["\'][^>]+href=["\']([^"\']+)', html, re.I
@@ -199,7 +204,7 @@ def _find_wp_api_root(html: str, base: str) -> str:
             r'<link[^>]+href=["\']([^"\']+)["\'][^>]+rel=["\']https://api\.w\.org/["\']', html, re.I
         )
     if m:
-        return m.group(1).strip()
+        return urljoin(base, m.group(1).strip())
     return urljoin(base, "/wp-json/")
 
 
@@ -222,14 +227,36 @@ async def _probe_json_api(
 
     api_root = _find_wp_api_root(html, base).rstrip("/") + "/"
 
-    # Tour sites publish tours as a custom type, as shop products, or as posts.
-    candidates = ["wp/v2/tour", "wp/v2/package", "wp/v2/product", "wp/v2/posts"]
+    # Ask the site which post types it actually publishes instead of guessing.
+    # Tour sites commonly register a custom type ("tour", "package", "tours")
+    # whose name we would never hit by guessing alone.
+    candidates: list[str] = []
+    try:
+        resp = await client.get(urljoin(api_root, "wp/v2/types"))
+        if resp.status_code == 200:
+            types = resp.json()
+            if isinstance(types, dict):
+                for slug, info in types.items():
+                    if slug.startswith("wp_") or slug in ("attachment", "nav_menu_item"):
+                        continue  # WordPress internals, never tour content.
+                    rest_base = (info or {}).get("rest_base") or slug
+                    if any(w in slug.lower() for w in TOUR_POST_TYPE_WORDS):
+                        candidates.insert(0, f"wp/v2/{rest_base}")  # tour-ish first
+                    elif slug in ("post", "page"):
+                        candidates.append(f"wp/v2/{rest_base}")
+    except Exception:
+        pass
+
+    if not candidates:
+        candidates = ["wp/v2/tour", "wp/v2/package", "wp/v2/product", "wp/v2/posts"]
 
     empty_but_working: str | None = None
 
     for path in candidates:
         url = urljoin(api_root, path)
         try:
+            # per_page=1 deliberately: some sites 500 on the default page size
+            # of 100, and one record is all that is needed to confirm the door.
             resp = await client.get(url, params={"per_page": 1})
         except Exception:
             continue
@@ -370,7 +397,24 @@ async def _probe_rendering(base: str, raw_html: str, profile: SiteProfile, rende
         from playwright.async_api import async_playwright
 
         async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=True)
+            browser = None
+            # Prefer Playwright's own Chromium; fall back to an installed Chrome
+            # or Edge when the browser download was never completed.
+            for channel in (None, "chrome", "msedge"):
+                try:
+                    kwargs = {"headless": True}
+                    if channel:
+                        kwargs["channel"] = channel
+                    browser = await pw.chromium.launch(**kwargs)
+                    break
+                except Exception:
+                    continue
+            if browser is None:
+                raise RuntimeError(
+                    "no usable Chromium: run `playwright install chromium` "
+                    "or install Google Chrome"
+                )
+
             page = await browser.new_page(user_agent=USER_AGENT)
             await page.goto(base, wait_until="networkidle", timeout=20000)
             rendered_html = await page.content()
