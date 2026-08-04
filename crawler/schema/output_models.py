@@ -63,11 +63,52 @@ ROOM_TYPES = (
 )
 
 # How the traveller gets there. Kept coarse on purpose: this is the field the
-# search engine filters on, while airline and flight details live on the offer.
-TRANSPORT_AIR = "air"       # هوایی
+# search engine filters on, while the carrier name and journey details live on
+# the offer. The target sites sell these three and nothing else.
+TRANSPORT_AIR = "air"       # هوایی / پرواز
+TRANSPORT_TRAIN = "train"   # قطار / ریلی
 TRANSPORT_BUS = "bus"       # زمینی / اتوبوس
-TRANSPORT_TRAIN = "train"   # قطار
-TRANSPORT_SHIP = "ship"     # کشتی
+
+TRANSPORT_TYPES = (
+    TRANSPORT_AIR,
+    TRANSPORT_TRAIN,
+    TRANSPORT_BUS,
+)
+
+# The words the sites actually print, mapped to the value we store. Without this
+# the field holds raw site text — "هوایی" on one site, "Air" on the next — and
+# the search engine cannot filter across all fifty of them.
+_TRANSPORT_WORDS: dict[str, str] = {
+    "هوایی": TRANSPORT_AIR,
+    "هواپیما": TRANSPORT_AIR,
+    "پرواز": TRANSPORT_AIR,
+    "air": TRANSPORT_AIR,
+    "flight": TRANSPORT_AIR,
+    "قطار": TRANSPORT_TRAIN,
+    "ریلی": TRANSPORT_TRAIN,
+    "train": TRANSPORT_TRAIN,
+    "زمینی": TRANSPORT_BUS,
+    "اتوبوس": TRANSPORT_BUS,
+    "bus": TRANSPORT_BUS,
+}
+
+
+def normalize_transport(text: Optional[str]) -> Optional[str]:
+    """Turn whatever a site printed into one of the TRANSPORT_* values.
+
+    Returns ``None`` when nothing matches, which is deliberate: an unknown value
+    is better left empty than guessed. An empty field shows up in the per-field
+    fill-rate check, while a wrong one hides.
+    """
+    if not text:
+        return None
+    low = text.strip().lower()
+    if low in TRANSPORT_TYPES:
+        return low  # already normalized
+    for word, value in _TRANSPORT_WORDS.items():
+        if word in low:
+            return value
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -130,14 +171,33 @@ class Hotel:
 
 @dataclass
 class Transport:
-    """Flight (or other vehicle) details for one departure."""
+    """How one departure travels — air, train or bus, described the same way.
 
-    airline: Optional[str] = None            # "ایران ایرتور"
-    origin_code: Optional[str] = None        # "IKA"
-    destination_code: Optional[str] = None   # "KUL"
-    cabin_class: Optional[str] = None        # "Economy"
-    duration: Optional[str] = None           # "08:00" — مدت سفر
-    flight_number: Optional[str] = None
+    Only fields that mean something for all three live here. Flight number and
+    cabin class were dropped: nobody searches on them, and they made a class
+    that claims to cover three transport types really model just one.
+
+    Times are deliberately absent. A time belongs to a date, so departure and
+    arrival times live on the :class:`TourDate` objects of the offer. Keeping a
+    second copy here would let the two disagree, and then neither can be
+    trusted. ``duration`` plus the departure time gives the arrival anyway.
+    """
+
+    # Airline, train company or bus company — "ایران ایرتور", "رجا", ...
+    name: Optional[str] = None
+    duration: Optional[str] = None  # "08:00" — مدت سفر
+
+    # Airport or station codes when the site prints them. Free on some sites and
+    # worth keeping: "IKA" pins the origin exactly, while the free-text
+    # ``Tour.origin`` is spelled a different way on every one of the fifty
+    # sites. Normally empty for bus.
+    origin_code: Optional[str] = None       # "IKA"
+    destination_code: Optional[str] = None  # "KUL"
+
+    # Normally None. Set only when a page mixes transport types across its
+    # departures, so that rare case does not need a schema change. The page
+    # level value on :class:`Tour` is the usual home — see its docstring.
+    transportation_type: Optional[str] = None
 
 
 @dataclass
@@ -243,7 +303,14 @@ class Tour:
     tour_name: Optional[str] = None
     origin: Optional[str] = None
     destination: Optional[str] = None
-    transportation_type: Optional[str] = None  # a TRANSPORT_* value
+
+    # A TRANSPORT_* value, and the home of this fact. It is one value for the
+    # whole page: nahalgasht publishes it as a page level taxonomy, and a page
+    # of 4 dates x 7 hotels would otherwise repeat "air" 28 times. Bus and train
+    # pages often print no carrier details at all, so an offer level home would
+    # leave a required output field empty on pages that plainly stated it.
+    transportation_type: Optional[str] = None
+
     image_url: Optional[str] = None
     is_installment_available: Optional[bool] = None  # اقساط
 
@@ -273,7 +340,11 @@ class Tour:
                 "tour_name": self.tour_name,
                 "origin": self.origin,
                 "destination": self.destination,
-                "transportation_type": self.transportation_type,
+                # Page level value, unless this one departure overrode it.
+                "transportation_type": (
+                    (offer.transport.transportation_type if offer.transport else None)
+                    or self.transportation_type
+                ),
                 "departure_date": offer.departure.iso or offer.departure.raw,
                 "return_date": offer.ret.iso or offer.ret.raw,
                 "number_of_nights": offer.nights if offer.nights is not None else hotel.nights,
@@ -291,7 +362,8 @@ class Tour:
                 "hotel_city": hotel.city,
                 "departure_time": offer.departure.time,
                 "return_time": offer.ret.time,
-                "airline": (offer.transport.airline if offer.transport else None),
+                "transport_name": (offer.transport.name if offer.transport else None),
+                "transport_duration": (offer.transport.duration if offer.transport else None),
             }
             row.update(_price_columns("adult", offer.adult_price))
             row.update(_price_columns("child", offer.child_price))
