@@ -21,8 +21,8 @@ import httpx
 from protego import Protego
 from selectolax.parser import HTMLParser
 
-from ..config import DEFAULT_TIMEOUT_SECONDS, USER_AGENT
-from .models import (
+from crawler.config import DEFAULT_TIMEOUT_SECONDS, USER_AGENT
+from crawler.profiler.models import (
     SiteProfile,
     RobotsInfo,
     SitemapInfo,
