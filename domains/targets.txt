@@ -1,0 +1,15 @@
+# Target tour agency sites.
+#
+# Every feature in this project is checked against real pages from this list
+# before it is trusted: assumptions about markup, JSON, pricing and dates have
+# already proved wrong more than once when tested on a live site.
+#
+# One entry per line. Blank lines and lines starting with "#" are ignored.
+
+https://nahalgasht.com
+https://www.alefbatour.com
+https://avisatravel.com
+https://bisanseir.com
+https://liyaseir.com
+https://vanrosh.com
+https://www.tahagasht.com
