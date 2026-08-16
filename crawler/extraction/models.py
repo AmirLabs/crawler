@@ -108,8 +108,8 @@ class ExtractedPage:
         ... )
         >>> page.row_count
         1
-        >>> round(page.fill_rate, 2)
-        0.4
+        >>> round(page.page_fill_rate, 2), round(page.row_fill_rate, 2)
+        (0.33, 0.5)
     """
 
     url: str
@@ -144,33 +144,57 @@ class ExtractedPage:
         return len(self.rows)
 
     @property
-    def fill_rate(self) -> float:
-        """Share of looked-for fields that were resolved, across page and rows.
+    def page_fill_rate(self) -> float:
+        """Share of the page-level fields that were resolved.
 
-        Mirrors :attr:`crawler.filtering.models.UrlDiscovery.keep_rate`: near
-        zero means the extraction rules found almost nothing on this page and
-        probably do not match its structure; near one means most target fields
-        were resolved with confidence.
-
-        Rows are counted field by field rather than as whole units, so a page
-        whose hotel names all resolved but whose prices all failed reads as
-        half-filled instead of fully filled.
+        The denominator is fixed — every tour page is asked for the same
+        page-level fields — so this number means the same thing on every page
+        of every site and can be compared across them.
 
         Example:
             >>> ExtractedPage(
             ...     url="https://example.com/tour/1",
             ...     page_fields={"tour_name": ExtractedField(value="x", method=METHOD_EXACT_KEY)},
             ...     unresolved_page_fields=["origin"],
-            ... ).fill_rate
+            ... ).page_fill_rate
             0.5
         """
         resolved = len(self.page_fields)
         total = resolved + len(self.unresolved_page_fields)
+        return (resolved / total) if total else 0.0
 
-        for row in self.rows:
-            resolved += len(row.fields)
-            total += len(row.fields) + len(row.unresolved_fields)
+    @property
+    def row_fill_rate(self) -> Optional[float]:
+        """Share of the row-level fields that were resolved, or ``None``.
 
+        ``None`` means there were no rows to measure, which is not the same as
+        rows that came out empty. Reporting it as a zero would read as "the
+        rules failed on every row"; reporting it as a one — which an earlier
+        combined rate effectively did — would read as success. Neither is true
+        of a page that produced no rows at all, and
+        :attr:`row_count` is what says so.
+
+        Fields are counted one by one across every row rather than by whole
+        rows, so a page whose hotel names all resolved but whose prices all
+        failed reads as half-filled rather than fully filled.
+
+        Example:
+            >>> ExtractedPage(
+            ...     url="https://example.com/tour/1",
+            ...     rows=[ExtractedRow(
+            ...         fields={"hotel_name": ExtractedField(value="x", method=METHOD_EXACT_KEY)},
+            ...         unresolved_fields=["board_type", "price"],
+            ...     )],
+            ... ).row_fill_rate
+            0.3333333333333333
+            >>> ExtractedPage(url="https://example.com/tour/1").row_fill_rate is None
+            True
+        """
+        if not self.rows:
+            return None
+
+        resolved = sum(len(row.fields) for row in self.rows)
+        total = resolved + sum(len(row.unresolved_fields) for row in self.rows)
         return (resolved / total) if total else 0.0
 
     def to_dict(self) -> dict[str, Any]:
