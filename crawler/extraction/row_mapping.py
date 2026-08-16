@@ -134,6 +134,21 @@ def _price_value(local: PriceText, foreign: Optional[PriceText]) -> dict[str, ob
     }
 
 
+def _date_value(parsed: DateText) -> dict[str, object]:
+    """Flatten one date into the three things :class:`TourDate` keeps.
+
+    The time is carried here rather than dropped: avisatravel.com and
+    alefbatour.com print a departure time beside the date, and the schema has a
+    place for it. ``iso`` stays empty when the page gave no day, so a partial
+    date is passed on as partial instead of being completed by guesswork.
+
+    Example:
+        >>> _date_value(find_dates("07 شهریور ساعت : 22:30")[0])
+        {'iso': '2026-08-29', 'raw': '07 شهریور ساعت : 22:30', 'time': '22:30'}
+    """
+    return {"iso": to_iso(parsed), "raw": parsed.raw, "time": parsed.time}
+
+
 def map_row_text(
     text: str, index: int = 0, source_path: Optional[str] = None
 ) -> ExtractedRow:
@@ -174,9 +189,9 @@ def map_row_text(
     # --- dates ------------------------------------------------------------- #
     departure, return_ = _assign_dates(text, find_dates(text))
     if departure is not None:
-        record("departure_date", to_iso(departure) or departure.raw, departure.raw)
+        record("departure_date", _date_value(departure), departure.raw)
     if return_ is not None:
-        record("return_date", to_iso(return_) or return_.raw, return_.raw)
+        record("return_date", _date_value(return_), return_.raw)
 
     # --- price ------------------------------------------------------------- #
     pairs = pair_dual_currency(text, find_prices(text))
