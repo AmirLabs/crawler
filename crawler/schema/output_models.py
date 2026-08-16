@@ -145,16 +145,23 @@ class Price:
 
 @dataclass
 class TourDate:
-    """A date as the site printed it, plus the machine-readable version.
+    """A date as the site printed it, plus the machine-readable versions.
 
     Persian sites print Jalali dates ("24 مرداد"), sometimes with Persian digits
     and often without a year. ``raw`` is kept exactly as found so a bad calendar
     conversion can always be traced back and re-done without re-crawling.
+
+    ``jalali`` is not the same thing as ``raw``: it is the tidied, complete
+    Jalali date derived from ``iso``, with the year the page left out filled in
+    and the time removed. Both are kept because they answer different questions
+    — ``raw`` says what the page claimed, ``jalali`` says what that resolves to
+    in the calendar the customer reads.
     """
 
-    raw: Optional[str] = None   # "24 مرداد" / "۱۴۰۵/۰۵/۲۴"
-    iso: Optional[str] = None   # "2026-08-15" after Jalali -> Gregorian
-    time: Optional[str] = None  # "22:30" if a departure/arrival time was shown
+    raw: Optional[str] = None     # "24 مرداد" / "۱۴۰۵/۰۵/۲۴"
+    iso: Optional[str] = None     # "2026-08-15" after Jalali -> Gregorian
+    jalali: Optional[str] = None  # "1405-05-24", normalized back from ``iso``
+    time: Optional[str] = None    # "22:30" if a departure/arrival time was shown
 
 
 @dataclass 
@@ -347,6 +354,13 @@ class Tour:
                 ),
                 "departure_date": offer.departure.iso or offer.departure.raw,
                 "return_date": offer.ret.iso or offer.ret.raw,
+                # The same two dates in the calendar the customer reads. Shipped
+                # alongside rather than instead of the Gregorian ones: those
+                # sort and compare across sources, these are what a Persian
+                # traveller recognises, and deriving one from the other twice
+                # in two codebases is how the two drift apart.
+                "departure_date_jalali": offer.departure.jalali,
+                "return_date_jalali": offer.ret.jalali,
                 "number_of_nights": offer.nights if offer.nights is not None else hotel.nights,
                 # Singular at this grain: one row is one hotel on one date.
                 "hotels": hotel.name,
