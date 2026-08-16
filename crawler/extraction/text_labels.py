@@ -70,6 +70,11 @@ _STAR_RE = re.compile(r"(\d)" + _GAP + r"ستاره")
 # quote both and the schema stores nights.
 _NIGHTS_RE = re.compile(r"(\d{1,2})" + _GAP + r"شب")
 
+# "12روزه" / "8 روز". Only read when no night count was printed: a tour sold as
+# N days is spent N-1 nights, and the sites that state days rarely also state
+# nights.
+_DAYS_RE = re.compile(r"(\d{1,2})" + _GAP + r"روز")
+
 # Board codes as printed: "(B.B)", "خدمات:BB", "HB", "ALL". The dotted form is
 # common enough that stripping dots is part of reading it.
 _BOARD_RE = re.compile(
@@ -117,7 +122,11 @@ def detect_star_rating(text: str) -> Optional[int]:
 
 
 def detect_nights(text: str) -> Optional[int]:
-    """Read how many nights a row covers.
+    """Read how many nights a stretch of text describes.
+
+    Nights are preferred over days wherever both are printed — "7 شب و 8 روز"
+    is seven nights — and a day count is converted only when no night count is
+    given, as alefbatour.com's "تور 12روزه" does.
 
     The first count wins. nahalgasht.com prints "2 شب 3 شب" on one card, where
     the two are separate options rather than a range, and taking the first
@@ -128,14 +137,24 @@ def detect_nights(text: str) -> Optional[int]:
         7
         >>> detect_nights("2 شب 3 شب")
         2
+        >>> detect_nights("تور 12روزه آفریقای جنوبی")
+        11
         >>> detect_nights("دو تخته 92,000,000 تومان") is None
         True
     """
-    match = _NIGHTS_RE.search(normalize_digits(text))
-    if not match:
-        return None
-    nights = int(match.group(1))
-    return nights if 1 <= nights <= 60 else None
+    normalized = normalize_digits(text)
+
+    match = _NIGHTS_RE.search(normalized)
+    if match:
+        nights = int(match.group(1))
+        return nights if 1 <= nights <= 60 else None
+
+    match = _DAYS_RE.search(normalized)
+    if match:
+        nights = int(match.group(1)) - 1
+        return nights if 1 <= nights <= 60 else None
+
+    return None
 
 
 def detect_board_type(text: str) -> Optional[str]:
