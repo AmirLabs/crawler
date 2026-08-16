@@ -35,6 +35,7 @@ from crawler.extraction.models import (
     METHOD_HEURISTIC_HTML,
     ExtractedField,
     ExtractedRow,
+    record_attempt,
 )
 from crawler.extraction.target_fields import ROW_FIELDS, unresolved
 from crawler.extraction.text_dates import DateText, find_dates, to_iso
@@ -49,6 +50,22 @@ from crawler.extraction.text_values import PriceText, find_prices, pair_dual_cur
 # Words that mark the return leg. Checked before the departure words because a
 # row labels its second date and leaves the first one implied.
 _RETURN_LABELS = ("برگشت", "بازگشت", "return")
+
+# What this module reads, and from where. Recorded against any of these that
+# comes back empty, so a later stage can tell a field that was searched for and
+# missing from one no rule has ever looked for — ``hotel_name`` is the second
+# kind today, and knowing that is what stops the LLM stage being asked to
+# repeat work the deterministic rules already do.
+_ROW_TEXT_SCOPE = f"{METHOD_HEURISTIC_HTML}:row_text"
+_ATTEMPTED_FIELDS: tuple[str, ...] = (
+    "room_type",
+    "hotel_star_rating",
+    "board_type",
+    "nights",
+    "departure_date",
+    "return_date",
+    "price",
+)
 
 
 def _find_return_marker(text: str) -> Optional[int]:
@@ -131,8 +148,10 @@ def map_row_text(
         ['price', 'room_type']
         >>> row.fields["room_type"].value
         'double'
-        >>> "departure_date" in row.unresolved_fields
-        True
+        >>> row.attempts["departure_date"]
+        ['heuristic_html:row_text']
+        >>> "hotel_name" in row.attempts   # nothing looks for it yet
+        False
     """
     text = " ".join(text.split())
     fields: dict[str, ExtractedField] = {}
@@ -165,9 +184,15 @@ def map_row_text(
         local, foreign = pairs[0]
         record("price", _price_value(local, foreign), local.raw)
 
+    attempts: dict[str, list[str]] = {}
+    for name in _ATTEMPTED_FIELDS:
+        if name not in fields:
+            record_attempt(attempts, name, _ROW_TEXT_SCOPE)
+
     return ExtractedRow(
         fields=fields,
         unresolved_fields=unresolved(fields, ROW_FIELDS),
+        attempts=attempts,
         source_path=source_path,
         index=index,
     )
