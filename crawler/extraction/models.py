@@ -21,6 +21,30 @@ METHOD_HEURISTIC_HTML = "heuristic_html"  # CSS selector / regex pattern learned
 METHOD_LLM = "llm"                        # sent to the LLM because nothing else resolved it
 
 
+def record_attempt(attempts: dict[str, list[str]], field_name: str, method: str) -> None:
+    """Note that ``method`` was tried for ``field_name`` and came back empty.
+
+    Only failures are worth recording: a method that worked is already named on
+    the resolved :class:`ExtractedField`. What this adds is the difference
+    between a field nothing could find and a field nothing looked for — the
+    first needs a different approach, the second just needs a rule.
+
+    ``method`` may be qualified with what was searched, as ``method:scope``,
+    so a later stage can be told where the gap is rather than only that one
+    exists: ``"heuristic_html:row_text"`` says the row's own text was read.
+
+    Example:
+        >>> attempts: dict[str, list[str]] = {}
+        >>> record_attempt(attempts, "hotel_name", "heuristic_html:row_text")
+        >>> record_attempt(attempts, "hotel_name", "heuristic_html:ancestors")
+        >>> attempts
+        {'hotel_name': ['heuristic_html:row_text', 'heuristic_html:ancestors']}
+    """
+    tried = attempts.setdefault(field_name, [])
+    if method not in tried:
+        tried.append(method)
+
+
 @dataclass
 class ExtractedField:
     """One resolved value for one target schema field, with how we got it.
@@ -72,6 +96,11 @@ class ExtractedRow:
 
     fields: dict[str, ExtractedField] = field(default_factory=dict)
     unresolved_fields: list[str] = field(default_factory=list)
+
+    # For the unresolved fields, what was tried and came back empty. A name
+    # absent from here was never looked for, which is a different problem and
+    # deserves a different answer — see :func:`record_attempt`.
+    attempts: dict[str, list[str]] = field(default_factory=dict)
 
     # Which repeating structure this row came from, and its position in it.
     source_path: Optional[str] = None  # "$.hotels[*]"
@@ -129,6 +158,9 @@ class ExtractedPage:
     # Page-level field names nothing could resolve. Empty does not mean "this
     # page has no more data" — it means every field we looked for was found.
     unresolved_page_fields: list[str] = field(default_factory=list)
+
+    # What was tried for those, and failed. See :func:`record_attempt`.
+    page_attempts: dict[str, list[str]] = field(default_factory=dict)
 
     # The repeating part of the page: one entry per bookable combination found.
     # Empty means no repeating structure was recognised, which on a tour page
