@@ -37,6 +37,7 @@ from crawler.extraction.models import (
     METHOD_HEURISTIC_HTML,
     ExtractedField,
     ExtractedPage,
+    record_attempt,
 )
 from crawler.extraction.row_mapping import map_rows
 from crawler.extraction.target_fields import PAGE_FIELDS, unresolved
@@ -51,6 +52,19 @@ _LOGO_PATH_ENDINGS = (".logo.url", ".logo.contentUrl", ".publisher.logo.url")
 # belongs near the tour's own description; further down sit the footer's links
 # to every other kind of tour the agency sells, and those would answer for it.
 _TRANSPORT_SCAN_CHARS = 3000
+
+# Which page-level fields this module actually looks for, and where it looks.
+# ``origin``, ``destination`` and ``is_installment_available`` are missing on
+# purpose: no rule reads them yet, and saying so is more useful than implying
+# they were searched for and absent.
+_PAGE_ATTEMPTS: dict[str, str] = {
+    "tour_name": f"{METHOD_HEURISTIC_HTML}:h1/og:title",
+    "image_url": f"{METHOD_HEURISTIC_HTML}:og:image",
+    "agency_name": f"{METHOD_HEURISTIC_HTML}:og:site_name",
+    "website_url": f"{METHOD_EXACT_KEY}:page_host",
+    "logo_url": f"{METHOD_EXACT_KEY}:json_ld_logo",
+    "transportation_type": f"{METHOD_HEURISTIC_HTML}:page_text",
+}
 
 
 def _meta_content(tree: HTMLParser, *names: str) -> Optional[str]:
@@ -208,6 +222,9 @@ def extract_page_from_html(
     page = ExtractedPage(url=url, html_raw=html, embedded_json=embedded_json or [])
     page.page_fields = read_page_fields(tree, url, page.embedded_json)
     page.unresolved_page_fields = unresolved(page.page_fields, PAGE_FIELDS)
+    for name, scope in _PAGE_ATTEMPTS.items():
+        if name not in page.page_fields:
+            record_attempt(page.page_attempts, name, scope)
 
     containers = find_row_containers(tree, page_url=url)
     if not containers:
