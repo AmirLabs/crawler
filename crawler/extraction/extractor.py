@@ -32,6 +32,7 @@ from crawler.config import (
     USER_AGENT,
 )
 from crawler.profiler.models import SiteProfile
+from crawler.utils.http import get_with_retry
 from crawler.extraction.models import (
     ExtractedPage,
     FETCH_HTTP,
@@ -166,10 +167,9 @@ async def _fetch_http(client: httpx.AsyncClient, url: str) -> ExtractedPage:
         'http'
     """
     page = ExtractedPage(url=url, fetch_method=FETCH_HTTP)
-    try:
-        resp = await client.get(url)
-    except Exception as exc:
-        page.error = f"request failed: {exc}"
+    resp, error = await get_with_retry(client, url)
+    if resp is None:
+        page.error = f"request failed: {error}"
         return page
 
     page.status_code = resp.status_code

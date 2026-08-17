@@ -22,6 +22,7 @@ from protego import Protego
 from selectolax.parser import HTMLParser
 
 from crawler.config import DEFAULT_TIMEOUT_SECONDS, USER_AGENT
+from crawler.utils.http import get_with_retry
 from crawler.profiler.models import (
     SiteProfile,
     RobotsInfo,
@@ -131,12 +132,15 @@ def _detect_js_framework(html: str) -> str | None:
 # --------------------------------------------------------------------------- #
 
 async def _probe_homepage(client: httpx.AsyncClient, domain: str, profile: SiteProfile) -> str | None:
-    """Fetch the homepage. Fills reachability, status, tech, anti-bot. Returns raw HTML."""
-    try:
-        resp = await client.get(domain)
-    except Exception as exc:  # network error, DNS fail, timeout, etc.
+    """Fetch the homepage. Fills reachability, status, tech, anti-bot. Returns raw HTML.
+
+    A single timeout here used to mark a whole site unreachable and drop it
+    from the run, so the request is retried before that conclusion is drawn.
+    """
+    resp, error = await get_with_retry(client, domain)
+    if resp is None:
         profile.reachable = False
-        profile.error = f"{type(exc).__name__}: {exc}"
+        profile.error = error
         return None
 
     profile.reachable = True
