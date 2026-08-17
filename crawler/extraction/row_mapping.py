@@ -30,6 +30,7 @@ from __future__ import annotations
 import re
 from typing import Optional
 
+from crawler.extraction.hotel_block import HotelBlock, read_hotel_block
 from crawler.extraction.html_rows import RowContainer
 from crawler.extraction.models import (
     METHOD_HEURISTIC_HTML,
@@ -57,6 +58,17 @@ _RETURN_LABELS = ("برگشت", "بازگشت", "return")
 # kind today, and knowing that is what stops the LLM stage being asked to
 # repeat work the deterministic rules already do.
 _ROW_TEXT_SCOPE = f"{METHOD_HEURISTIC_HTML}:row_text"
+_HOTEL_BLOCK_SCOPE = f"{METHOD_HEURISTIC_HTML}:hotel_block"
+
+# What the block enclosing the rows can supply, and the field each one fills.
+# These are read once per block and shared by its rows, because the rows are
+# the room choices for that one hotel.
+_BLOCK_FIELDS: tuple[tuple[str, str], ...] = (
+    ("name", "hotel_name"),
+    ("star_rating", "hotel_star_rating"),
+    ("board_type", "board_type"),
+    ("nights", "nights"),
+)
 _ATTEMPTED_FIELDS: tuple[str, ...] = (
     "room_type",
     "hotel_star_rating",
@@ -213,8 +225,44 @@ def map_row_text(
     )
 
 
+def _apply_hotel_block(row: ExtractedRow, block: HotelBlock) -> None:
+    """Add the block's facts to a row, without overriding what the row said.
+
+    The row is the more specific source: if a row states its own board type,
+    that beats the one printed above the table. Whatever the block supplies is
+    marked with its own scope, so a value shared by every row is never mistaken
+    for one read from the row itself.
+
+    Example:
+        >>> row = map_row_text("دو تخته 82,000,000 تومان")
+        >>> _apply_hotel_block(row, HotelBlock(name="The Train Resort", star_rating=3))
+        >>> row.fields["hotel_name"].value, row.fields["hotel_name"].source_key
+        ('The Train Resort', 'heuristic_html:hotel_block')
+    """
+    for attribute, field_name in _BLOCK_FIELDS:
+        value = getattr(block, attribute)
+        if value is None or field_name in row.fields:
+            continue
+        row.fields[field_name] = ExtractedField(
+            value=value,
+            method=METHOD_HEURISTIC_HTML,
+            source_key=_HOTEL_BLOCK_SCOPE,
+        )
+        row.attempts.pop(field_name, None)
+
+    for _, field_name in _BLOCK_FIELDS:
+        if field_name not in row.fields:
+            record_attempt(row.attempts, field_name, _HOTEL_BLOCK_SCOPE)
+
+    row.unresolved_fields = unresolved(row.fields, ROW_FIELDS)
+
+
 def map_rows(container: RowContainer) -> list[ExtractedRow]:
     """Read every member of ``container`` into a row.
+
+    Facts printed above the rows — the hotel's name, rating and board — are
+    read once from the enclosing block and applied to all of them, since that
+    is what the page means by putting them there.
 
     Members that yield no field at all are dropped: an empty row would count
     against the page's fill rate while saying nothing about it.
@@ -232,9 +280,13 @@ def map_rows(container: RowContainer) -> list[ExtractedRow]:
         >>> [r.fields["room_type"].value for r in rows]
         ['double', 'single']
     """
+    block = read_hotel_block(container)
+
     rows: list[ExtractedRow] = []
     for index, text in enumerate(container.texts()):
         row = map_row_text(text, index=index, source_path=container.path)
-        if row.fields:
-            rows.append(row)
+        if not row.fields:
+            continue
+        _apply_hotel_block(row, block)
+        rows.append(row)
     return rows
