@@ -40,18 +40,13 @@ from crawler.extraction.models import (
     record_attempt,
 )
 from crawler.extraction.row_mapping import map_rows
+from crawler.extraction.transport import detect_transport
 from crawler.extraction.target_fields import PAGE_FIELDS, unresolved
 from crawler.profiler.models import SiteProfile
-from crawler.schema.output_models import normalize_transport
 
 # JSON-LD keys that hold the publisher's logo. Yoast, which several of the
 # target sites use, writes the first of these.
 _LOGO_PATH_ENDINGS = (".logo.url", ".logo.contentUrl", ".publisher.logo.url")
-
-# Only this much of the page text is scanned for a transport word. The word
-# belongs near the tour's own description; further down sit the footer's links
-# to every other kind of tour the agency sells, and those would answer for it.
-_TRANSPORT_SCAN_CHARS = 3000
 
 # Which page-level fields this module actually looks for, and where it looks.
 # ``origin``, ``destination`` and ``is_installment_available`` are missing on
@@ -63,7 +58,7 @@ _PAGE_ATTEMPTS: dict[str, str] = {
     "agency_name": f"{METHOD_HEURISTIC_HTML}:og:site_name",
     "website_url": f"{METHOD_EXACT_KEY}:page_host",
     "logo_url": f"{METHOD_EXACT_KEY}:json_ld_logo",
-    "transportation_type": f"{METHOD_HEURISTIC_HTML}:page_text",
+    "transportation_type": f"{METHOD_HEURISTIC_HTML}:transport",
 }
 
 
@@ -130,7 +125,10 @@ def _read_logo_url(embedded_json: list[dict], base: str) -> Optional[str]:
 
 
 def read_page_fields(
-    tree: HTMLParser, url: str, embedded_json: Optional[list[dict]] = None
+    tree: HTMLParser,
+    url: str,
+    embedded_json: Optional[list[dict]] = None,
+    html: Optional[str] = None,
 ) -> dict[str, ExtractedField]:
     """Read the facts that hold for the whole page.
 
@@ -139,15 +137,16 @@ def read_page_fields(
         ...     '<html><head>'
         ...     '<meta property="og:image" content="/img/tour.jpg">'
         ...     '<meta property="og:site_name" content="نهال گشت">'
-        ...     '</head><body><h1>تور کوالالامپور</h1><p>پرواز مستقیم</p></body></html>'
+        ...     '</head><body><h1>تور کوالالامپور</h1>'
+        ...     '<p>از فرودگاه امام خمینی</p></body></html>'
         ... )
         >>> fields = read_page_fields(tree, "https://nahalgasht.com/tour/1")
         >>> fields["tour_name"].value, fields["agency_name"].value
         ('تور کوالالامپور', 'نهال گشت')
         >>> fields["image_url"].value
         'https://nahalgasht.com/img/tour.jpg'
-        >>> fields["transportation_type"].value
-        'air'
+        >>> fields["transportation_type"].value, fields["transportation_type"].source_key
+        ('air', 'transport:journey')
     """
     parsed = urlparse(url)
     base = f"{parsed.scheme}://{parsed.netloc}" if parsed.netloc else url
@@ -180,13 +179,20 @@ def read_page_fields(
         "json-ld logo",
     )
 
-    body = tree.body
-    text = " ".join((body.text(deep=True) if body else "").split())[:_TRANSPORT_SCAN_CHARS]
+    # Transport is read by its own rules rather than by scanning the page: the
+    # navigation menu names every kind of tour a site sells, which used to
+    # answer for tours it had nothing to do with. See
+    # :mod:`crawler.extraction.transport`.
+    tour_name = fields["tour_name"].value if "tour_name" in fields else None
+    transport, source = detect_transport(
+        html if html is not None else (tree.html or ""),
+        tour_name if isinstance(tour_name, str) else None,
+    )
     record(
         "transportation_type",
-        normalize_transport(text),
+        transport,
         METHOD_HEURISTIC_HTML,
-        "page text",
+        f"transport:{source}",
     )
 
     return fields
@@ -220,7 +226,7 @@ def extract_page_from_html(
         node.decompose()
 
     page = ExtractedPage(url=url, html_raw=html, embedded_json=embedded_json or [])
-    page.page_fields = read_page_fields(tree, url, page.embedded_json)
+    page.page_fields = read_page_fields(tree, url, page.embedded_json, html=html)
     page.unresolved_page_fields = unresolved(page.page_fields, PAGE_FIELDS)
     for name, scope in _PAGE_ATTEMPTS.items():
         if name not in page.page_fields:
