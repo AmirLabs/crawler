@@ -309,7 +309,15 @@ class Tour:
     tour_url: str
     tour_name: Optional[str] = None
     origin: Optional[str] = None
-    destination: Optional[str] = None
+
+    # Where the tour goes, kept twice because the two uses pull in opposite
+    # directions. About a third of the tours on the target sites visit several
+    # places — "تور بالی + اوبود + سنگاپور + کوالالامپور" — and a customer
+    # searching for Singapore has to find it, which a single string buried in
+    # three other names does not allow. The joined form is what a result page
+    # shows, since "بالی + سنگاپور" is what the agency is actually selling.
+    destination: Optional[str] = None   # as written: "بالی + سنگاپور"
+    destinations: list[str] = field(default_factory=list)  # ["بالی", "سنگاپور"]
 
     # A TRANSPORT_* value, and the home of this fact. It is one value for the
     # whole page: nahalgasht publishes it as a page level taxonomy, and a page
@@ -347,6 +355,9 @@ class Tour:
                 "tour_name": self.tour_name,
                 "origin": self.origin,
                 "destination": self.destination,
+                # The searchable form. Kept a list rather than joined, so a
+                # multi-city tour can be found by any one of its stops.
+                "destinations": list(self.destinations),
                 # Page level value, unless this one departure overrode it.
                 "transportation_type": (
                     (offer.transport.transportation_type if offer.transport else None)
