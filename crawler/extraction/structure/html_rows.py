@@ -1,6 +1,6 @@
 """Finding the repeating part of a tour page in its markup.
 
-This is the HTML counterpart of :func:`crawler.extraction.json_paths.find_row_paths`.
+This is the HTML counterpart of :func:`crawler.extraction.structure.json_paths.find_row_paths`.
 Where that module reads ``$.hotels[*]`` out of a JSON document, this one finds
 the sibling elements a page repeats — the hotel cards, the departure-date rows,
 the room-type lines — so their fields can be kept together as
@@ -17,7 +17,7 @@ look alike, most of them carrying a price:
 * bisanseir.com: ``div.hotel__beds`` holding 4x ``div.hotel__bed`` (one per room type)
 
 A price is what separates a real row group from the page's navigation menu or
-its list of related tours, so :mod:`crawler.extraction.text_values` does that
+its list of related tours, so :mod:`crawler.extraction.readers.prices` does that
 part: a group qualifies only when several of its members hold an amount with a
 currency word beside it.
 
@@ -37,7 +37,7 @@ from urllib.parse import unquote, urlparse
 
 from selectolax.parser import HTMLParser, Node
 
-from crawler.extraction.text_values import find_prices
+from crawler.extraction.readers.prices import find_prices
 
 # Elements that never hold page content worth reading as a row.
 _SKIP_TAGS = frozenset({"script", "style", "noscript", "template", "svg", "-text", "-undef"})

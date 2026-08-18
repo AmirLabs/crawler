@@ -17,7 +17,7 @@ Three facts about them drive everything here:
   covering a whole month. That is a real, partial answer, so it is returned as
   one — with ``day`` left empty rather than invented.
 * **Digits come in three scripts**, so text is normalised through
-  :func:`~crawler.extraction.text_values.normalize_digits` first.
+  :func:`~crawler.extraction.readers.prices.normalize_digits` first.
 
 Conversion to Gregorian is done here rather than by a library so the project
 keeps its short dependency list; the two algorithms below are the standard
@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Optional
 
-from crawler.extraction.text_values import normalize_digits
+from crawler.extraction.readers.prices import normalize_digits
 
 # Jalali month names in order, so the index gives the month number. Spellings
 # with an Arabic yeh are included because some sites type them that way.

@@ -17,7 +17,7 @@ Two habits of the real pages shape every pattern here:
   next value because the markup put them in adjacent tags. Matching on whole
   words alone would find neither.
 * **Digits come in three scripts**, so text is normalised through
-  :func:`~crawler.extraction.text_values.normalize_digits` before any number is
+  :func:`~crawler.extraction.readers.prices.normalize_digits` before any number is
   read.
 
 Every function returns ``None`` when nothing matches, following
@@ -30,7 +30,7 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from crawler.extraction.text_values import normalize_digits
+from crawler.extraction.readers.prices import normalize_digits
 from crawler.schema.output_models import (
     ROOM_CHILD_NO_BED,
     ROOM_CHILD_WITH_BED,

@@ -13,7 +13,7 @@ The page is read in two passes, because a tour page states two kinds of fact:
   per-site rule.
 * **Once per bookable option** — handed to
   :func:`crawler.extraction.row_mapping.map_rows`, which reads the repeating
-  block :mod:`crawler.extraction.html_rows` picked out.
+  block :mod:`crawler.extraction.structure.html_rows` picked out.
 
 ``origin`` and ``destination`` are deliberately left unresolved for now. They
 are readable only from prose on most of the target sites, and a guess would be
@@ -30,8 +30,8 @@ from selectolax.parser import HTMLParser
 
 from crawler.config import DEFAULT_TIMEOUT_SECONDS
 from crawler.extraction.extractor import fetch_page
-from crawler.extraction.html_rows import MIN_ROW_SCORE, find_row_containers
-from crawler.extraction.json_paths import flatten_json
+from crawler.extraction.structure.html_rows import MIN_ROW_SCORE, find_row_containers
+from crawler.extraction.structure.json_paths import flatten_json
 from crawler.extraction.models import (
     METHOD_EXACT_KEY,
     METHOD_HEURISTIC_HTML,
@@ -40,7 +40,7 @@ from crawler.extraction.models import (
     record_attempt,
 )
 from crawler.extraction.row_mapping import map_rows
-from crawler.extraction.transport import detect_transport
+from crawler.extraction.readers.transport import detect_transport
 from crawler.extraction.target_fields import PAGE_FIELDS, unresolved
 from crawler.profiler.models import SiteProfile
 
@@ -182,7 +182,7 @@ def read_page_fields(
     # Transport is read by its own rules rather than by scanning the page: the
     # navigation menu names every kind of tour a site sells, which used to
     # answer for tours it had nothing to do with. See
-    # :mod:`crawler.extraction.transport`.
+    # :mod:`crawler.extraction.readers.transport`.
     tour_name = fields["tour_name"].value if "tour_name" in fields else None
     transport, source = detect_transport(
         html if html is not None else (tree.html or ""),

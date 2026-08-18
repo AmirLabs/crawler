@@ -32,8 +32,8 @@ from datetime import date
 from typing import Any, Optional
 
 from crawler.extraction.models import ExtractedPage, ExtractedRow
-from crawler.extraction.text_dates import gregorian_to_jalali
-from crawler.extraction.text_labels import detect_nights
+from crawler.extraction.readers.dates import gregorian_to_jalali
+from crawler.extraction.readers.labels import detect_nights
 from crawler.schema.output_models import (
     ROOM_DOUBLE,
     Agency,

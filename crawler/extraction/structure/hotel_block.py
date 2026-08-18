@@ -36,14 +36,14 @@ from typing import Optional
 
 from selectolax.parser import Node
 
-from crawler.extraction.html_rows import RowContainer, _element_path
-from crawler.extraction.text_labels import (
+from crawler.extraction.structure.html_rows import RowContainer, _element_path
+from crawler.extraction.readers.labels import (
     detect_board_type,
     detect_nights,
     detect_room_type,
     detect_star_rating,
 )
-from crawler.extraction.text_values import find_prices
+from crawler.extraction.readers.prices import find_prices
 
 # How far above the rows to look before giving up. Beyond this the ancestors
 # hold the whole page, and their first text is a menu item.
@@ -208,7 +208,7 @@ def find_hotel_block(container: RowContainer) -> Optional[Node]:
 
     Example:
         >>> from selectolax.parser import HTMLParser
-        >>> from crawler.extraction.html_rows import find_row_containers
+        >>> from crawler.extraction.structure.html_rows import find_row_containers
         >>> tree = HTMLParser(
         ...     '<div class="hotel"><a>The Train Resort</a>'
         ...     '<div class="beds">'
@@ -251,7 +251,7 @@ def read_hotel_block(container: RowContainer) -> HotelBlock:
 
     Example:
         >>> from selectolax.parser import HTMLParser
-        >>> from crawler.extraction.html_rows import find_row_containers
+        >>> from crawler.extraction.structure.html_rows import find_row_containers
         >>> tree = HTMLParser(
         ...     '<div class="hotel"><a>The Train Resort</a>'
         ...     '<span>3 ستاره</span><span>خدمات:</span><span>BB</span>'

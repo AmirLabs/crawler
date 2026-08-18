@@ -1,10 +1,10 @@
 """Turning a repeating block of markup into rows with named fields.
 
-:mod:`crawler.extraction.html_rows` finds *where* a page repeats;
-:mod:`~crawler.extraction.text_values`, :mod:`~crawler.extraction.text_labels`
-and :mod:`~crawler.extraction.text_dates` read the individual values. This
+:mod:`crawler.extraction.structure.html_rows` finds *where* a page repeats;
+:mod:`~crawler.extraction.readers.prices`, :mod:`~crawler.extraction.readers.labels`
+and :mod:`~crawler.extraction.readers.dates` read the individual values. This
 module is where the three meet: it walks one
-:class:`~crawler.extraction.html_rows.RowContainer` and produces one
+:class:`~crawler.extraction.structure.html_rows.RowContainer` and produces one
 :class:`~crawler.extraction.models.ExtractedRow` per member, with the fields
 named as :mod:`crawler.extraction.target_fields` defines them.
 
@@ -30,8 +30,8 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from crawler.extraction.hotel_block import HotelBlock, read_hotel_block
-from crawler.extraction.html_rows import RowContainer
+from crawler.extraction.structure.hotel_block import HotelBlock, read_hotel_block
+from crawler.extraction.structure.html_rows import RowContainer
 from crawler.extraction.models import (
     METHOD_HEURISTIC_HTML,
     ExtractedField,
@@ -39,14 +39,14 @@ from crawler.extraction.models import (
     record_attempt,
 )
 from crawler.extraction.target_fields import ROW_FIELDS, unresolved
-from crawler.extraction.text_dates import DateText, find_dates, to_iso
-from crawler.extraction.text_labels import (
+from crawler.extraction.readers.dates import DateText, find_dates, to_iso
+from crawler.extraction.readers.labels import (
     detect_board_type,
     detect_nights,
     detect_room_type,
     detect_star_rating,
 )
-from crawler.extraction.text_values import PriceText, find_prices, pair_dual_currency
+from crawler.extraction.readers.prices import PriceText, find_prices, pair_dual_currency
 
 # Words that mark the return leg. Checked before the departure words because a
 # row labels its second date and leaves the first one implied.
@@ -269,7 +269,7 @@ def map_rows(container: RowContainer) -> list[ExtractedRow]:
 
     Example:
         >>> from selectolax.parser import HTMLParser
-        >>> from crawler.extraction.html_rows import find_row_containers
+        >>> from crawler.extraction.structure.html_rows import find_row_containers
         >>> tree = HTMLParser(
         ...     '<div class="beds">'
         ...     '<div class="bed">دو تخته 92,000,000 تومان</div>'
