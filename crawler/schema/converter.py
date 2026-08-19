@@ -351,6 +351,7 @@ def build_tour(page: ExtractedPage) -> Tour:
         tour_name=tour_name,
         origin=_value(page.page_fields, "origin"),
         destination=_value(page.page_fields, "destination"),
+        destinations=_value(page.page_fields, "destinations") or [],
         transportation_type=_value(page.page_fields, "transportation_type"),
         image_url=_value(page.page_fields, "image_url"),
         is_installment_available=_value(page.page_fields, "is_installment_available"),
