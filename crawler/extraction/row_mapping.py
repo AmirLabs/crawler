@@ -290,3 +290,60 @@ def map_rows(container: RowContainer) -> list[ExtractedRow]:
         _apply_hotel_block(row, block)
         rows.append(row)
     return rows
+
+
+def _fingerprint(row: ExtractedRow) -> tuple[tuple[str, str], ...]:
+    """What makes two rows the same offer, ignoring where they were found.
+
+    Example:
+        >>> _fingerprint(map_row_text("دو تخته 92,000,000 تومان"))
+        (('price', "{'amount': 92000000.0, 'currency': 'IRT', 'foreign_amount': None,
+          'foreign_currency': None, 'raw': '92,000,000 تومان'}"), ('room_type', 'double'))
+    """
+    return tuple(sorted((name, str(f.value)) for name, f in row.fields.items()))
+
+
+def map_blocks(containers: list[RowContainer]) -> list[ExtractedRow]:
+    """Read every block of a page into one list of rows.
+
+    Each block is read on its own so that its enclosing hotel — the name, the
+    rating, the board type printed above its rows — reaches the rows it belongs
+    to. Reading them together would give all sixty-four of bisanseir's rows the
+    first hotel's name.
+
+    Rows repeated between blocks are kept once. alefbatour.com prints its
+    departure list twice, in the page and again inside a booking dialog, and the
+    second copy is shorter, so only comparing the rows themselves catches it.
+
+    Example:
+        >>> from selectolax.parser import HTMLParser
+        >>> from crawler.extraction.structure.html_rows import (
+        ...     find_row_containers, offer_blocks)
+        >>> tree = HTMLParser(
+        ...     '<div class="hotel"><h3>هتل آرگ ۴ ستاره</h3><div class="beds">'
+        ...     '<div class="bed">دو تخته 92,000,000 تومان</div>'
+        ...     '<div class="bed">یک تخته 99,000,000 تومان</div></div></div>'
+        ...     '<div class="hotel"><h3>هتل هما ۵ ستاره</h3><div class="beds">'
+        ...     '<div class="bed">دو تخته 82,000,000 تومان</div>'
+        ...     '<div class="bed">یک تخته 89,000,000 تومان</div></div></div>'
+        ... )
+        >>> rows = map_blocks(offer_blocks(find_row_containers(tree)))
+        >>> [(r.index, r.fields["hotel_name"].value) for r in rows]
+        [(0, 'هتل آرگ ۴ ستاره'), (1, 'هتل آرگ ۴ ستاره'),
+         (2, 'هتل هما ۵ ستاره'), (3, 'هتل هما ۵ ستاره')]
+    """
+    rows: list[ExtractedRow] = []
+    seen: set[tuple[tuple[str, str], ...]] = set()
+
+    for container in containers:
+        for row in map_rows(container):
+            fingerprint = _fingerprint(row)
+            if fingerprint in seen:
+                continue
+            seen.add(fingerprint)
+            # Numbered across the page rather than within its block, so an index
+            # points at one row of the output and not at one of seventeen.
+            row.index = len(rows)
+            rows.append(row)
+
+    return rows
