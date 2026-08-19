@@ -367,3 +367,80 @@ def find_row_containers(
         unique.append(container)
 
     return unique
+
+
+def offer_blocks(
+    containers: list[RowContainer], min_score: float = MIN_ROW_SCORE
+) -> list[RowContainer]:
+    """Pick every block that holds this page's offers, not just the best one.
+
+    A tour page rarely keeps its offers in one list. bisanseir.com gives each
+    hotel its own block of room rows and prints seventeen of them down the page;
+    taking the best-scoring block alone kept four rows out of sixty-four, and
+    one hotel out of sixteen.
+
+    What the wanted blocks share is the element they repeat, so the best block
+    names the shape and every other block repeating that same shape joins it.
+    That is what keeps the page's own room rows in and leaves out a differently
+    built list — a sidebar of related tours — that happens to score well.
+
+    Blocks come back in document order, since the page's order is the order a
+    reader sees the hotels in and there is nothing better to sort by.
+
+    Example:
+        >>> tree = HTMLParser(
+        ...     '<div class="hotel"><div class="beds">'
+        ...     '<div class="bed">دو تخته 92,000,000 تومان</div>'
+        ...     '<div class="bed">یک تخته 99,000,000 تومان</div>'
+        ...     '</div></div>'
+        ...     '<div class="hotel"><div class="beds">'
+        ...     '<div class="bed">دو تخته 82,000,000 تومان</div>'
+        ...     '<div class="bed">یک تخته 89,000,000 تومان</div>'
+        ...     '</div></div>'
+        ... )
+        >>> blocks = offer_blocks(find_row_containers(tree))
+        >>> [b.texts()[0] for b in blocks]
+        ['دو تخته 92,000,000 تومان', 'دو تخته 82,000,000 تومان']
+    """
+    if not containers:
+        return []
+
+    best = containers[0]
+    if best.score < min_score:
+        return []
+
+    kept = [
+        container
+        for container in containers
+        if container.signature == best.signature and container.score >= min_score
+    ]
+    # ``containers`` arrives sorted by score, which scrambles blocks that scored
+    # the same. Reading order is restored from where each block's first member
+    # sits in the markup.
+    kept.sort(key=lambda container: _document_position(container.members[0]))
+    return kept
+
+
+def _document_position(node: Node) -> tuple[int, ...]:
+    """Where a node sits in the document, as its index at each level.
+
+    Comparing two of these compares document order, which is what restores a
+    reading order that sorting by score threw away.
+
+    Example:
+        >>> tree = HTMLParser('<div><p>a</p><p>b</p></div>')
+        >>> first, second = tree.css("p")
+        >>> _document_position(first) < _document_position(second)
+        True
+    """
+    path: list[int] = []
+    current: Optional[Node] = node
+    while current is not None and current.parent is not None:
+        index = 0
+        sibling = current.parent.child
+        while sibling is not None and sibling != current:
+            index += 1
+            sibling = sibling.next
+        path.append(index)
+        current = current.parent
+    return tuple(reversed(path))
