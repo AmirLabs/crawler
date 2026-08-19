@@ -12,8 +12,10 @@ The page is read in two passes, because a tour page states two kinds of fact:
   Open Graph tags, so ``og:title`` and ``og:image`` work everywhere without a
   per-site rule.
 * **Once per bookable option** — handed to
-  :func:`crawler.extraction.row_mapping.map_rows`, which reads the repeating
-  block :mod:`crawler.extraction.structure.html_rows` picked out.
+  :func:`crawler.extraction.row_mapping.map_blocks`, which reads every
+  repeating block :func:`crawler.extraction.structure.html_rows.offer_blocks`
+  picked out. Every, not the best one: bisanseir.com gives each of its hotels
+  its own block of room rows, so the best block alone is one hotel of sixteen.
 
 ``origin`` and ``destination`` are deliberately left unresolved for now. They
 are readable only from prose on most of the target sites, and a guess would be
@@ -30,7 +32,11 @@ from selectolax.parser import HTMLParser
 
 from crawler.config import DEFAULT_TIMEOUT_SECONDS
 from crawler.extraction.extractor import fetch_page
-from crawler.extraction.structure.html_rows import MIN_ROW_SCORE, find_row_containers
+from crawler.extraction.structure.html_rows import (
+    MIN_ROW_SCORE,
+    find_row_containers,
+    offer_blocks,
+)
 from crawler.extraction.structure.json_paths import flatten_json
 from crawler.extraction.models import (
     METHOD_EXACT_KEY,
@@ -39,7 +45,7 @@ from crawler.extraction.models import (
     ExtractedPage,
     record_attempt,
 )
-from crawler.extraction.row_mapping import map_rows
+from crawler.extraction.row_mapping import map_blocks
 from crawler.extraction.readers.transport import detect_transport
 from crawler.extraction.target_fields import PAGE_FIELDS, unresolved
 from crawler.profiler.models import SiteProfile
@@ -237,16 +243,20 @@ def extract_page_from_html(
         page.notes.append("no repeating block with prices found")
         return page
 
-    best = containers[0]
-    if best.score < MIN_ROW_SCORE:
+    blocks = offer_blocks(containers)
+    if not blocks:
+        best = containers[0]
         page.notes.append(
             f"best block scored {best.score:.2f}, below {MIN_ROW_SCORE} "
             f"({'; '.join(best.reasons)})"
         )
         return page
 
-    page.rows = map_rows(best)
-    page.notes.append(f"rows from {best.path} (score {best.score:.2f})")
+    page.rows = map_blocks(blocks)
+    page.notes.append(
+        f"rows from {len(blocks)} x {blocks[0].signature} "
+        f"(score {blocks[0].score:.2f}, first at {blocks[0].path})"
+    )
     return page
 
 
