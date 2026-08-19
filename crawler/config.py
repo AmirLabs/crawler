@@ -34,3 +34,16 @@ USER_AGENT = os.getenv(
     "CRAWLER_USER_AGENT", "TourCrawler/0.1 (+crawler; contact: you@example.com)"
 )
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# Which model reads entities out of a tour's name. Naming a destination in a
+# short Persian title is a small job, so the cheap model does it: at roughly
+# 30 tokens per name, a thousand names cost a few cents, and the answers are
+# cached anyway so a name is only ever paid for once.
+#
+# Set from the environment because a model name is a deployment detail — the
+# alternative is editing source to move off it.
+LLM_MODEL = os.getenv("CRAWLER_LLM_MODEL", "gpt-4o-mini")
+
+# OpenAI direct. Only worth setting if the calls are ever routed through
+# something else.
+LLM_BASE_URL = os.getenv("CRAWLER_LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")

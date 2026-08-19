@@ -2,3 +2,9 @@ httpx>=0.27
 selectolax>=0.3.21
 protego>=0.3
 playwright>=1.44
+
+# Reading entities out of a tour's title. Pinned to a major line rather than
+# left open: this library's API has broken between major versions before, and a
+# nightly crawl is a bad place to discover it.
+langchain-core>=0.3,<0.4
+langchain-openai>=0.2,<0.4
