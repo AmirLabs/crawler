@@ -241,6 +241,42 @@ def find_hotel_block(container: RowContainer) -> Optional[Node]:
     return None
 
 
+def _surrounding_text(block: Node, row_texts: list[str]) -> str:
+    """The block's own text, plus its parent's when the card wraps it.
+
+    Some sites split one hotel across two elements: nahalgasht.com puts the
+    name and the location in ``div.reserve`` and the star rating on the
+    ``div.hotelcard`` around it. The name has to come from the inner element —
+    the outer one starts with a badge, "پیشنهاد ویژه نهال‌گشت", which would be
+    read as the hotel — so the block stays where it is and only the ratings
+    look one level further out.
+
+    The parent is used only while it stays within :data:`_MAX_BLOCK_CHARS`,
+    which is what stops this from climbing into the page.
+
+    The parent's text already contains the block's, so it replaces it rather
+    than being added to it.
+
+    Example:
+        >>> from selectolax.parser import HTMLParser
+        >>> tree = HTMLParser(
+        ...     '<div class="card"><span>3 ستاره</span>'
+        ...     '<div class="inner"><b>هتل پارسه</b>'
+        ...     '<div class="bed">دو تخته 5,000,000 تومان</div></div></div>'
+        ... )
+        >>> inner = tree.css_first("div.inner")
+        >>> _surrounding_text(inner, ["دو تخته 5,000,000 تومان"])
+        '3 ستارههتل پارسه'
+    """
+    own = _extra_text(block, row_texts)
+    parent = block.parent
+    if parent is None or parent.tag in ("body", "html", "-undef"):
+        return own
+
+    wider = _extra_text(parent, row_texts)
+    return wider if len(wider) <= _MAX_BLOCK_CHARS else own
+
+
 def read_hotel_block(container: RowContainer) -> HotelBlock:
     """Read the hotel facts that belong to every row in ``container``.
 
@@ -280,10 +316,14 @@ def read_hotel_block(container: RowContainer) -> HotelBlock:
             name = own
             break
 
+    # The name must come from the block itself, but a rating or a board code
+    # is often printed on the card around it, so those look a little wider.
+    around = _surrounding_text(block, row_texts)
+
     return HotelBlock(
         name=name,
-        star_rating=detect_star_rating(extra),
-        board_type=detect_board_type(extra),
-        nights=detect_nights(extra),
+        star_rating=detect_star_rating(around),
+        board_type=detect_board_type(around),
+        nights=detect_nights(around),
         path=_element_path(block),
     )
