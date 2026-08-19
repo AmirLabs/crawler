@@ -32,6 +32,7 @@ from crawler.extraction.extractor import fetch_page
 from crawler.extraction.page_extract import extract_page_from_html
 from crawler.filtering.tour_groups import group_by_tour
 from crawler.filtering.url_filter import discover_tour_urls
+from crawler.llm.tour_names import fill_page_places
 from crawler.profiler.profiler import profile_site
 from crawler.schema.converter import build_tour
 from crawler.utils.domains import load_domains
@@ -43,11 +44,13 @@ REVIEW_FIELDS = (
     "tour_name",
     "origin",
     "destination",
+    "destinations",
     "transportation_type",
     "departure_date",
     "departure_date_jalali",
     "departure_time",
     "return_date",
+    "return_date_jalali",
     "number_of_nights",
     "hotels",
     "hotel_star_rating",
@@ -112,20 +115,30 @@ async def audit_site(domain: str, pages: int) -> dict:
     step = max(1, len(groups) // pages)
     picks = [groups[i].primary for i in range(0, len(groups), step)][:pages]
 
+    extracted: list = []
     for url in picks:
         fetched = await fetch_page(url, profile, timeout=40)
         if not fetched.html_raw:
             result["notes"].append(f"{url} -> {fetched.error}")
             continue
 
-        page = extract_page_from_html(url, fetched.html_raw, fetched.embedded_json)
-        tour = build_tour(page)
+        extracted.append(extract_page_from_html(url, fetched.html_raw, fetched.embedded_json))
         result["pages"] += 1
+        await asyncio.sleep(1.0)
+
+    # The places a tour goes to are read from every title at once rather than
+    # page by page: the instructions cost far more than a title, so one call
+    # per page would spend fifty times what one call per fifty spends.
+    if extracted:
+        filled = fill_page_places(extracted)
+        result["notes"].append(f"destinations read for {filled} of {len(extracted)} pages")
+
+    for page in extracted:
+        tour = build_tour(page)
         for row in tour.to_rows():
             result["rows"].append(row)
         if not tour.offers:
-            result["notes"].append(f"no offers: {url}  ({'; '.join(page.notes)})")
-        await asyncio.sleep(1.0)
+            result["notes"].append(f"no offers: {page.url}  ({'; '.join(page.notes)})")
 
     return result
 
