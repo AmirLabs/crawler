@@ -49,16 +49,23 @@ from crawler.extraction.readers.prices import find_prices
 # hold the whole page, and their first text is a menu item.
 _MAX_LEVELS = 5
 
-# A name shorter than this is a fragment; longer than this is a sentence.
+# A name shorter than this is a fragment; longer than this is a sentence. The
+# upper bound has to clear the longest real name on these sites, which is
+# "Park Inn by Radisson Pulkovskaya Hotel & Conference Centre St Petersburg"
+# at 71 characters.
 _MIN_NAME_CHARS = 3
-_MAX_NAME_CHARS = 60
+_MAX_NAME_CHARS = 80
 
-# How much a hotel block may say beyond its rows. Measured across the target
-# sites: a real one runs 68 to 88 characters — a name and a few labels — while
-# the page sections that merely happen to mention a hotel run 537 to 3101. The
-# two bands do not overlap, and without this cap the walk climbs past the hotel
-# into a section whose first fragment is a heading like "بیشتر بخوانیــد".
-_MAX_BLOCK_CHARS = 200
+# How much a hotel block may say beyond its rows. Measured again once blocks
+# naming several hotels were being read: a real block runs 58 to 281 characters
+# — one to three names with their labels — while the page sections that merely
+# mention a hotel start at 325 and climb to 3429. The gap between 281 and 325 is
+# empty, so the cap sits in it.
+#
+# A stay of four or more hotels would pass 300 and be missed. None appears on
+# the target sites today, and a cap that stayed ahead of that would reach into
+# the sections, so this is a known limit rather than an oversight.
+_MAX_BLOCK_CHARS = 300
 
 # Text that sits beside a hotel name and would otherwise be mistaken for one.
 # This list is a guard, not the mechanism: the name is found by position, and
@@ -73,6 +80,10 @@ _NOT_A_NAME = (
     "پیشنهاد ویژه",
     "تکمیل ظرفیت",
     "امتیاز",
+    # "قیمتهای هتل" closes a bisanseir block and names a hotel word, so it
+    # survives every other test.
+    "قیمت",
+    "خرید",
 )
 
 _HAS_LETTER = re.compile(r"[^\W\d_]", re.UNICODE)
@@ -158,6 +169,8 @@ def _looks_like_a_name(text: str) -> bool:
         False
         >>> _looks_like_a_name("82,000,000 تومان")
         False
+        >>> _looks_like_a_name("BB با صبحانه")
+        False
     """
     if not (_MIN_NAME_CHARS <= len(text) <= _MAX_NAME_CHARS):
         return False
@@ -166,6 +179,21 @@ def _looks_like_a_name(text: str) -> bool:
     if any(label in text for label in _NOT_A_NAME):
         return False
     if find_prices(text) or detect_room_type(text):
+        return False
+    # A board code standing on its own is a label. It only has to be excluded
+    # now that every name in a block is collected rather than the first one:
+    # "BB با صبحانه" is printed after each hotel, and the old walk stopped
+    # before ever reaching it.
+    if detect_board_type(text) is not None and not any(
+        word in text.lower() for word in _HOTEL_WORDS
+    ):
+        return False
+    # One lowercase word naming no lodging is a marker, not a hotel. bisanseir
+    # prints "land" beside every ground tour. Hotels on these sites are always
+    # several words or carry the word itself, so nothing real is lost.
+    if len(text.split()) == 1 and text.islower() and not any(
+        word in text.lower() for word in _HOTEL_WORDS
+    ):
         return False
     # A fragment that is nothing but a rating or a duration is a label, but one
     # that carries them alongside a name ("هتل پارسه 3 ستاره") is still a name.
@@ -280,10 +308,13 @@ def _surrounding_text(block: Node, row_texts: list[str]) -> str:
 def read_hotel_block(container: RowContainer) -> HotelBlock:
     """Read the hotel facts that belong to every row in ``container``.
 
-    The name is taken from the first text in the block that could be one; the
-    rating, board and duration are read from the block's own text, so a rating
-    printed as a badge beside the name is picked up as readily as one written
-    into it.
+    ``name`` holds every hotel the block names, joined with ``+``. Most blocks
+    name one. A tour that moves between cities names two — bisanseir.com sells
+    Moscow and St Petersburg under a single price — and both belong to the offer.
+
+    The rating, board and duration are read from the block's own text, so a
+    rating printed as a badge beside the name is picked up as readily as one
+    written into it.
 
     Example:
         >>> from selectolax.parser import HTMLParser
@@ -307,14 +338,17 @@ def read_hotel_block(container: RowContainer) -> HotelBlock:
     row_texts = container.texts()
     extra = _extra_text(block, row_texts)
 
-    name: Optional[str] = None
+    names: list[str] = []
     for node in block.css("*"):
         own = _clean(node.text(deep=False))
         if not own or own not in extra:
             continue  # belongs to a row, not to the block
-        if _looks_like_a_name(own):
-            name = own
-            break
+        # Every name, not the first: a tour that moves city sleeps in two
+        # hotels on one price, and naming only the first hides half the stay.
+        # These pages print each name twice, so a repeat is dropped.
+        if _looks_like_a_name(own) and own not in names:
+            names.append(own)
+    name = " + ".join(names) if names else None
 
     # The name must come from the block itself, but a rating or a board code
     # is often printed on the card around it, so those look a little wider.
