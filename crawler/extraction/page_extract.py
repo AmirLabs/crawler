@@ -24,6 +24,7 @@ worse than an empty field that the fill rate can point at.
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Optional
 from urllib.parse import urljoin, urlparse
 
@@ -45,8 +46,9 @@ from crawler.extraction.models import (
     ExtractedPage,
     record_attempt,
 )
+from crawler.extraction.availability import find_closed_notice, split_by_availability
 from crawler.extraction.row_mapping import map_blocks
-from crawler.extraction.readers.transport import detect_transport
+from crawler.extraction.readers.transport import detect_transport, main_text
 from crawler.extraction.target_fields import PAGE_FIELDS, unresolved
 from crawler.profiler.models import SiteProfile
 
@@ -205,7 +207,10 @@ def read_page_fields(
 
 
 def extract_page_from_html(
-    url: str, html: str, embedded_json: Optional[list[dict]] = None
+    url: str,
+    html: str,
+    embedded_json: Optional[list[dict]] = None,
+    today: Optional[date] = None,
 ) -> ExtractedPage:
     """Build an :class:`ExtractedPage` from markup already in hand.
 
@@ -252,11 +257,22 @@ def extract_page_from_html(
         )
         return page
 
-    page.rows = map_blocks(blocks)
+    page.rows, page.expired_rows = split_by_availability(map_blocks(blocks), today)
     page.notes.append(
         f"rows from {len(blocks)} x {blocks[0].signature} "
         f"(score {blocks[0].score:.2f}, first at {blocks[0].path})"
     )
+    if page.expired_rows:
+        page.notes.append(f"{len(page.expired_rows)} offers had already departed")
+
+    # The site's own notice explains an empty page; it never decides one. On
+    # alefbatour and avisatravel it sits above departures that are still open.
+    if not page.sellable:
+        notice = find_closed_notice(main_text(html))
+        page.notes.append(
+            f"nothing left to sell; the page says {notice!r}" if notice
+            else "nothing left to sell and the page gives no reason"
+        )
     return page
 
 

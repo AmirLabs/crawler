@@ -167,6 +167,11 @@ class ExtractedPage:
     # is itself a signal that the rules did not match this layout.
     rows: list[ExtractedRow] = field(default_factory=list)
 
+    # Offers that were read but have already departed. Kept apart rather than
+    # dropped so an empty page can explain itself: "nothing was read" and "four
+    # departures were read and all four have left" need different fixes.
+    expired_rows: list[ExtractedRow] = field(default_factory=list)
+
     fetched_at: Optional[str] = None    # ISO timestamp, set by the fetch layer
     content_hash: Optional[str] = None  # skip unchanged pages on a daily refresh
     notes: list[str] = field(default_factory=list)
@@ -174,6 +179,21 @@ class ExtractedPage:
     @property
     def row_count(self) -> int:
         return len(self.rows)
+
+    @property
+    def sellable(self) -> bool:
+        """Whether this page still offers anything a customer could book.
+
+        What makes a page worth keeping, and the cheapest thing for a daily run
+        to test before spending anything further on it.
+
+        Example:
+            >>> ExtractedPage(url="https://x.com/t/1").sellable
+            False
+            >>> ExtractedPage(url="https://x.com/t/1", rows=[ExtractedRow()]).sellable
+            True
+        """
+        return bool(self.rows)
 
     @property
     def page_fill_rate(self) -> float:
