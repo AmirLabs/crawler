@@ -33,6 +33,7 @@ from crawler.config import (
     USER_AGENT,
 )
 from crawler.extraction.rendering import needs_rendering
+from crawler.extraction.tour_api import find_api_base
 from crawler.profiler.models import SiteProfile
 from crawler.utils.http import get_with_retry
 from crawler.extraction.models import (
@@ -294,6 +295,13 @@ async def fetch_page(
             page = await _fetch_http(owned_client, url)
 
     if page.html_raw and needs_rendering(page.html_raw):
+        # A site that publishes its own API needs no browser: the JSON carries
+        # what the template would have been filled with, for one small request
+        # instead of a browser launch and an eight second wait.
+        if find_api_base(page.html_raw):
+            page.notes.append("page needs rendering but the site publishes an API")
+            return page
+
         rendered = await _fetch_playwright(url, timeout=timeout)
         if rendered.html_raw:
             rendered.notes = page.notes + [

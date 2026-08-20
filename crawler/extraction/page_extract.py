@@ -17,9 +17,18 @@ The page is read in two passes, because a tour page states two kinds of fact:
   picked out. Every, not the best one: bisanseir.com gives each of its hotels
   its own block of room rows, so the best block alone is one hotel of sixteen.
 
-``origin`` and ``destination`` are deliberately left unresolved for now. They
-are readable only from prose on most of the target sites, and a guess would be
-worse than an empty field that the fill rate can point at.
+Both passes read markup. Where a site publishes its own tour JSON —
+:mod:`crawler.extraction.tour_api` finds that from the page's own declaration —
+the JSON answers instead, because it states exactly what the markup only
+implies: an ISO departure time rather than "۲۹ مرداد ساعت ۰۵:۴۵", a numeric
+star grade rather than counted stars, an explicit currency rather than a
+guessed one. The document still supplies the picture, the agency name and the
+logo, which the JSON does not carry.
+
+``origin`` and ``destination`` are left unresolved on the markup path. They are
+readable only from prose on most of the target sites, and a guess would be
+worse than an empty field that the fill rate can point at; step 5 reads them
+from the tour's title instead.
 """
 
 from __future__ import annotations
@@ -48,6 +57,7 @@ from crawler.extraction.models import (
 )
 from crawler.extraction.availability import find_closed_notice, split_by_availability
 from crawler.extraction.row_mapping import map_blocks
+from crawler.extraction.tour_api import api_url_for, enrich_from_api, fetch_tour_json
 from crawler.extraction.readers.transport import detect_transport, main_text
 from crawler.extraction.target_fields import PAGE_FIELDS, unresolved
 from crawler.profiler.models import SiteProfile
@@ -281,6 +291,7 @@ async def extract_page(
     profile: SiteProfile,
     client: Optional[httpx.AsyncClient] = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    today: Optional[date] = None,
 ) -> ExtractedPage:
     """Fetch one tour URL and read everything step 3 knows how to read.
 
@@ -298,11 +309,34 @@ async def extract_page(
     if not fetched.html_raw:
         return fetched
 
-    page = extract_page_from_html(url, fetched.html_raw, fetched.embedded_json)
+    page = extract_page_from_html(url, fetched.html_raw, fetched.embedded_json, today=today)
     # Carry over what the fetch layer learned, so provenance survives.
     page.fetch_method = fetched.fetch_method
     page.status_code = fetched.status_code
     page.fetched_at = fetched.fetched_at
     page.content_hash = fetched.content_hash
     page.notes = fetched.notes + page.notes
+
+    # A site that publishes its own tour JSON knows its offers exactly, so its
+    # answer replaces what the markup was read for. Everything the JSON does not
+    # carry — the picture, the agency, the logo — stays as the document gave it.
+    api_url = api_url_for(url, fetched.html_raw)
+    if api_url:
+        data, error = await _tour_json(api_url, client, timeout)
+        if data is not None:
+            page = enrich_from_api(page, data)
+            page.rows, page.expired_rows = split_by_availability(page.rows, today)
+        else:
+            page.notes.append(f"site publishes an API but it did not answer: {error}")
+
     return page
+
+
+async def _tour_json(
+    api_url: str, client: Optional[httpx.AsyncClient], timeout: float
+) -> tuple[Optional[dict], Optional[str]]:
+    """Fetch a tour's JSON, borrowing the caller's client when there is one."""
+    if client is not None:
+        return await fetch_tour_json(client, api_url)
+    async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as owned:
+        return await fetch_tour_json(owned, api_url)
