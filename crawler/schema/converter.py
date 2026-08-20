@@ -249,7 +249,7 @@ def _build_offer(
         ...     })
         >>> offer = _build_offer([row("double", 82_000_000), row("single", 99_000_000)])
         >>> sorted(offer.prices), offer.adult_price.local.amount
-        (['double', 'single'], 82000000.0)
+        (['double', 'single'], 82000000)
     """
     first = rows[0].fields
 
