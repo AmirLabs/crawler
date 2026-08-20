@@ -61,13 +61,10 @@ _MIN_WITH_PRICE = 2
 _TERSE_MEDIAN = 150   # at or below this, members read like rows
 _VERBOSE_MEDIAN = 400  # at or above this, members read like page sections
 
-# Share of members that must link away before a group counts as a link list.
-_LINK_MAJORITY = 0.5
-
-# How much of two URL slugs must match to call them the same tour. alefbatour
-# publishes one page per departure date under an identical slug and a different
-# id, so its date list links away yet is still this tour's own offers.
-_SAME_TOUR_SIMILARITY = 0.6
+# Share required to call a block a navigation picker rather than offers. Set
+# high on purpose: this rejects a block outright, and the measured gap is total
+# — pickers link on every member, offer blocks on none.
+_LINK_MAJORITY_STRICT = 0.8
 
 # A group must reach this to be worth treating as the page's offer rows.
 MIN_ROW_SCORE = 0.5
@@ -198,40 +195,6 @@ class RowContainer:
         return [" ".join((node.text(deep=True) or "").split()) for node in self.members]
 
 
-def _slug_tokens(url: str) -> set[str]:
-    """Words in a URL's last path segment, with numbers dropped.
-
-    Ids are removed because they are what legitimately differs between two
-    pages of the same tour: ``/tour/d/152904/تور-3شب-ارمنستان`` and
-    ``/tour/d/152909/تور-3شب-ارمنستان`` are the same tour on two dates.
-
-    Example:
-        >>> sorted(_slug_tokens("https://nahalgasht.com/tour/59262-istanbul-divan-hotel/"))
-        ['divan', 'hotel', 'istanbul']
-    """
-    path = unquote(urlparse(url).path)
-    segments = [seg for seg in path.split("/") if seg]
-    if not segments:
-        return set()
-    tokens = re.split(r"[-_\s]+", segments[-1].lower())
-    return {t for t in tokens if t and not t.isdigit()}
-
-
-def _is_same_tour(url_a: str, url_b: str) -> bool:
-    """Whether two URLs look like the same tour rather than two different ones.
-
-    Example:
-        >>> _is_same_tour("/tour/d/152904/tour-3sb-armanestan", "/tour/d/152909/tour-3sb-armanestan")
-        True
-        >>> _is_same_tour("/tour/59262-istanbul-divan-hotel/", "/tour/62953-alanya-5-days/")
-        False
-    """
-    a, b = _slug_tokens(url_a), _slug_tokens(url_b)
-    if not a or not b:
-        return False
-    return len(a & b) / max(len(a), len(b)) >= _SAME_TOUR_SIMILARITY
-
-
 def heading_above(container: RowContainer) -> Optional[str]:
     """The short piece of text a page prints just before a block.
 
@@ -278,6 +241,38 @@ def _names_other_tours(heading: Optional[str]) -> Optional[str]:
     if not heading:
         return None
     return next((phrase for phrase in _OTHER_TOURS_HEADINGS if phrase in heading), None)
+
+
+def _is_navigation(container: RowContainer) -> bool:
+    """Whether this block is a picker that sends the reader somewhere else.
+
+    alefbatour.com and avisatravel.com publish one page per departure and print
+    the tour's other departures above the hotels, each one a link to its own
+    page. Those pages are crawled in their own right, so reading the picker here
+    stores another page's departures as this one's offers and buries the hotel
+    list that the page is actually selling.
+
+    The test is that essentially every member carries a link out. A real offer
+    row does not: measured over eight rendered pages, every date picker had a
+    link on all of its members and every hotel block had none at all.
+
+    Example:
+        >>> tree = HTMLParser(
+        ...     '<ul><li><a href="/tour/d/1/x">03 شهریور 98,000,000 تومان</a></li>'
+        ...     '<li><a href="/tour/d/2/x">10 شهریور 99,000,000 تومان</a></li></ul>'
+        ... )
+        >>> _is_navigation(find_row_containers(tree)[0])
+        True
+    """
+    if not container.members:
+        return False
+    linked = 0
+    for member in container.members:
+        anchor = member.css_first("a[href]")
+        href = (anchor.attributes.get("href") or "") if anchor is not None else ""
+        if href and not href.startswith("#"):
+            linked += 1
+    return linked >= container.count * _LINK_MAJORITY_STRICT
 
 
 def score_row_container(
@@ -349,20 +344,9 @@ def score_row_container(
     if other:
         score -= 0.6
         reasons.append(f"sits under a heading for other tours ('{other}')")
-    elif page_url:
-        # Links still help when they agree, but only as a small confirmation
-        # now — never as the 0.6 penalty that used to sink genuine blocks.
-        linked = [
-            (member.css_first("a[href]").attributes.get("href") or "")
-            for member in container.members
-            if member.css_first("a[href]") is not None
-        ]
-        linked = [href for href in linked if href and not href.startswith("#")]
-        if linked and len(linked) >= container.count * _LINK_MAJORITY:
-            same = sum(1 for href in linked if _is_same_tour(page_url, href))
-            if same >= len(linked) * _LINK_MAJORITY:
-                score += 0.15
-                reasons.append("members link to this same tour on other dates")
+    elif _is_navigation(container):
+        score -= 0.6
+        reasons.append("every member links away — a picker, not this page's offers")
 
     container.score = max(0.0, min(1.0, score))
     container.reasons = reasons
