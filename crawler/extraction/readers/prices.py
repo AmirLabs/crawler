@@ -155,6 +155,32 @@ def find_prices(text: str) -> list[PriceText]:
     return found
 
 
+# The currencies an Iranian agency quotes in its own money. Everything else is
+# the foreign half of a price, whichever side of the "+" it was printed on.
+_LOCAL_CURRENCIES = frozenset({CURRENCY_TOMAN, CURRENCY_RIAL})
+
+
+def _local_first(
+    first: PriceText, second: PriceText
+) -> tuple[PriceText, Optional[PriceText]]:
+    """Order one joined pair so the Iranian half leads.
+
+    A pair of two local or two foreign amounts is left in the order the page
+    wrote it: there is nothing to swap, and reordering it would only lose the
+    page's own meaning.
+
+    Example:
+        >>> text = "545 دلار + 119,990,000 تومان"
+        >>> a, b = find_prices(text)
+        >>> local, foreign = _local_first(a, b)
+        >>> local.currency, foreign.currency
+        ('IRT', 'USD')
+    """
+    if second.currency in _LOCAL_CURRENCIES and first.currency not in _LOCAL_CURRENCIES:
+        return second, first
+    return first, second
+
+
 def pair_dual_currency(
     text: str, prices: list[PriceText]
 ) -> list[tuple[PriceText, Optional[PriceText]]]:
@@ -166,12 +192,19 @@ def pair_dual_currency(
     one would merge a hotel's price with the next hotel's. Only an explicit
     ``+`` between the two joins them.
 
-    Returns one entry per logical price: the local half, and the foreign half
-    when there is one.
+    Returns one entry per logical price: the local half first, then the foreign
+    half when there is one. Which is which is decided by the currency, never by
+    the order the page printed them in. alefbatour.com writes the Toman first
+    and nahalgasht.com writes the dollars first, and taking the first as local
+    put ``545 USD`` in the same output column as ``43,900,000 IRT`` — two
+    numbers a customer would compare directly.
 
     Example:
         >>> text = "98,000,000 تومان + 260 دلار"
         >>> [(a.currency, b.currency if b else None) for a, b in pair_dual_currency(text, find_prices(text))]
+        [('IRT', 'USD')]
+        >>> flipped = "545 دلار + 119,990,000 تومان"
+        >>> [(a.currency, b.currency if b else None) for a, b in pair_dual_currency(flipped, find_prices(flipped))]
         [('IRT', 'USD')]
     """
     pairs: list[tuple[PriceText, Optional[PriceText]]] = []
@@ -184,7 +217,7 @@ def pair_dual_currency(
 
         nxt = prices[i + 1] if i + 1 < len(prices) else None
         if nxt is not None and _PLUS_BETWEEN.match(text[price.end:nxt.start]):
-            pairs.append((price, nxt))
+            pairs.append(_local_first(price, nxt))
             skip_next = True
         else:
             pairs.append((price, None))
