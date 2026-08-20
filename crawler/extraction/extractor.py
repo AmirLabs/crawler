@@ -189,46 +189,82 @@ async def _fetch_http(client: httpx.AsyncClient, url: str) -> ExtractedPage:
     return page
 
 
-async def _fetch_playwright(url: str, timeout: float) -> ExtractedPage:
-    """Fetch one URL with a headless browser, for pages that need JS to render.
+class BrowserSession:
+    """One headless browser, held open across many pages.
 
-    Mirrors the Chromium fallback chain in
-    :func:`crawler.profiler.profiler._probe_rendering`: Playwright's own
-    Chromium first, then an installed Chrome or Edge, so a missing
-    ``playwright install`` does not stop extraction on a machine that has a
-    system browser.
+    Launching Chromium costs a second or two, and the crawl used to pay it per
+    URL: a site needing 800 rendered pages launched 800 browsers. One browser
+    for a whole site turns that into one launch, and a fresh tab per page keeps
+    the pages from sharing cookies or leftover state.
+
+    The launch is lazy. Most sites never need a browser at all, and a session
+    that is opened but never used costs nothing.
 
     Example:
-        >>> page = await _fetch_playwright("https://example.com/tour/1", timeout=15.0)
+        >>> async with BrowserSession() as session:
+        ...     page = await session.fetch("https://example.com/tour/1", 15.0)
         >>> page.fetch_method
         'playwright'
     """
-    page = ExtractedPage(url=url, fetch_method=FETCH_PLAYWRIGHT)
-    try:
+
+    def __init__(self) -> None:
+        self._playwright = None
+        self._browser = None
+
+    async def __aenter__(self) -> "BrowserSession":
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self.close()
+
+    async def close(self) -> None:
+        """Shut the browser down, if one was ever started."""
+        if self._browser is not None:
+            try:
+                await self._browser.close()
+            finally:
+                self._browser = None
+        if self._playwright is not None:
+            try:
+                await self._playwright.stop()
+            finally:
+                self._playwright = None
+
+    async def _browser_or_launch(self):
+        """The open browser, launching one on first use.
+
+        Tries Playwright's own Chromium first, then an installed Chrome or
+        Edge, so a machine where ``playwright install`` was never run still
+        renders — which is the case on this one.
+        """
+        if self._browser is not None:
+            return self._browser
+
         from playwright.async_api import async_playwright
 
-        async with async_playwright() as pw:
-            browser = None
-            for channel in (None, "chrome", "msedge"):
-                try:
-                    kwargs = {"headless": True}
-                    if channel:
-                        kwargs["channel"] = channel
-                    browser = await pw.chromium.launch(**kwargs)
-                    break
-                except Exception:
-                    continue
-            if browser is None:
-                raise RuntimeError(
-                    "no usable Chromium: run `playwright install chromium` "
-                    "or install Google Chrome"
-                )
+        self._playwright = await async_playwright().start()
+        for channel in (None, "chrome", "msedge"):
+            try:
+                kwargs = {"headless": True}
+                if channel:
+                    kwargs["channel"] = channel
+                self._browser = await self._playwright.chromium.launch(**kwargs)
+                return self._browser
+            except Exception:
+                continue
 
+        raise RuntimeError(
+            "no usable Chromium: run `playwright install chromium` "
+            "or install Google Chrome"
+        )
+
+    async def fetch(self, url: str, timeout: float) -> ExtractedPage:
+        """Render one URL in a fresh tab of this session's browser."""
+        page = ExtractedPage(url=url, fetch_method=FETCH_PLAYWRIGHT)
+        browser_page = None
+        try:
+            browser = await self._browser_or_launch()
             browser_page = await browser.new_page(user_agent=USER_AGENT)
-            # "networkidle" never arrives on a page with analytics or a live
-            # socket — it timed out on every alefbatour tour page. Wait for the
-            # content instead: the template placeholders disappearing is what
-            # "finished" actually means here.
             response = await browser_page.goto(
                 url, wait_until="domcontentloaded", timeout=timeout * 1000
             )
@@ -243,16 +279,40 @@ async def _fetch_playwright(url: str, timeout: float) -> ExtractedPage:
                     f"network had not settled after {RENDER_SETTLE_SECONDS}s"
                 )
             html = await browser_page.content()
-            await browser.close()
 
-        page.status_code = response.status if response else None
-        page.fetched_at = _now_iso()
-        page.html_raw = html
-        page.embedded_json = _extract_embedded_json(html)
-        page.content_hash = _content_hash(html)
-    except Exception as exc:
-        page.error = f"render failed: {exc}"
-    return page
+            page.status_code = response.status if response else None
+            page.fetched_at = _now_iso()
+            page.html_raw = html
+            page.embedded_json = _extract_embedded_json(html)
+            page.content_hash = _content_hash(html)
+        except Exception as exc:
+            page.error = f"render failed: {exc}"
+        finally:
+            if browser_page is not None:
+                try:
+                    await browser_page.close()
+                except Exception:
+                    pass
+        return page
+
+
+async def _fetch_playwright(
+    url: str, timeout: float, browser: Optional[BrowserSession] = None
+) -> ExtractedPage:
+    """Render one URL, reusing ``browser`` when the caller has one open.
+
+    Without a session this opens and closes its own, which is right for a
+    single page and wasteful for many — :func:`fetch_pages` passes one in.
+
+    Example:
+        >>> page = await _fetch_playwright("https://example.com/tour/1", timeout=15.0)
+        >>> page.fetch_method
+        'playwright'
+    """
+    if browser is not None:
+        return await browser.fetch(url, timeout)
+    async with BrowserSession() as session:
+        return await session.fetch(url, timeout)
 
 
 # --------------------------------------------------------------------------- #
@@ -264,6 +324,7 @@ async def fetch_page(
     profile: SiteProfile,
     client: Optional[httpx.AsyncClient] = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    browser: Optional[BrowserSession] = None,
 ) -> ExtractedPage:
     """Fetch one tour URL, using a browser when the markup turns out to need one.
 
@@ -284,7 +345,7 @@ async def fetch_page(
         'http'
     """
     if profile.rendering.needs_playwright:
-        return await _fetch_playwright(url, timeout=timeout)
+        return await _fetch_playwright(url, timeout=timeout, browser=browser)
 
     if client is not None:
         page = await _fetch_http(client, url)
@@ -297,16 +358,28 @@ async def fetch_page(
     if page.html_raw and needs_rendering(page.html_raw):
         # A site that publishes its own API needs no browser: the JSON carries
         # what the template would have been filled with, for one small request
-        # instead of a browser launch and an eight second wait.
+        # instead of a browser launch and a wait.
         if find_api_base(page.html_raw):
             page.notes.append("page needs rendering but the site publishes an API")
             return page
 
-        rendered = await _fetch_playwright(url, timeout=timeout)
+        # Whether rendering is worth its 6-13 seconds is a fact about the site,
+        # and it is measured once rather than assumed — see
+        # ``RenderingInfo.render_helps``. Until that measurement exists the
+        # page is rendered, so the first page of a site is never the one that
+        # silently loses data.
+        if profile.rendering.render_helps is False:
+            page.notes.append("this site was measured: rendering adds nothing")
+            return page
+
+        rendered = await _fetch_playwright(url, timeout=timeout, browser=browser)
         if rendered.html_raw:
             rendered.notes = page.notes + [
                 "served markup still held template placeholders; rendered instead"
             ] + rendered.notes
+            # Keep the plain markup alongside, so the caller can compare what
+            # each produced and settle the question for this site.
+            rendered.html_before_render = page.html_raw
             return rendered
         page.notes.append(f"needed rendering but it failed: {rendered.error}")
 
@@ -325,6 +398,14 @@ async def fetch_pages(
     The wait goes *before* each request except the first — waiting after the
     last one delays the caller without protecting the host.
 
+    Both the HTTP client and the browser are opened once for the whole list.
+    The browser is the expensive one: launching Chromium takes a second or two,
+    and this used to pay it per URL. It is also lazy, so a site that needs no
+    rendering never starts one.
+
+    Every URL goes through :func:`fetch_page`, so the choice between HTTP, the
+    site's API and the browser is made in one place rather than twice.
+
     Example:
         >>> profile = SiteProfile(domain="example.com")
         >>> pages = await fetch_pages(["https://example.com/tour/1"], profile)
@@ -334,26 +415,19 @@ async def fetch_pages(
     results: list[ExtractedPage] = []
     delay, delay_note = _resolve_crawl_delay(profile)
 
-    if profile.rendering.needs_playwright:
-        for index, url in enumerate(urls):
-            if index:
-                await _wait_between_requests(delay)
-            page = await _fetch_playwright(url, timeout=timeout)
-            if delay_note:
-                page.notes.append(delay_note)
-            results.append(page)
-        return results
-
     async with httpx.AsyncClient(
         headers=DEFAULT_HEADERS, follow_redirects=True, timeout=timeout
     ) as client:
-        for index, url in enumerate(urls):
-            if index:
-                await _wait_between_requests(delay)
-            page = await _fetch_http(client, url)
-            if delay_note:
-                page.notes.append(delay_note)
-            results.append(page)
+        async with BrowserSession() as browser:
+            for index, url in enumerate(urls):
+                if index:
+                    await _wait_between_requests(delay)
+                page = await fetch_page(
+                    url, profile, client=client, timeout=timeout, browser=browser
+                )
+                if delay_note:
+                    page.notes.append(delay_note)
+                results.append(page)
 
     return results
 

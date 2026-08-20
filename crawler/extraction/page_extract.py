@@ -309,6 +309,8 @@ async def extract_page(
     if not fetched.html_raw:
         return fetched
 
+    fetched = _settle_render_question(fetched, profile, today)
+
     page = extract_page_from_html(url, fetched.html_raw, fetched.embedded_json, today=today)
     # Carry over what the fetch layer learned, so provenance survives.
     page.fetch_method = fetched.fetch_method
@@ -330,6 +332,68 @@ async def extract_page(
             page.notes.append(f"site publishes an API but it did not answer: {error}")
 
     return page
+
+
+def _settle_render_question(
+    fetched: ExtractedPage, profile: SiteProfile, today: Optional[date]
+) -> ExtractedPage:
+    """Decide once per site whether rendering earns its cost, and record it.
+
+    The fetch layer renders a page whose markup still holds template
+    placeholders, because it cannot know whether that matters. Here the rows
+    from both versions can be counted, which settles it — and the answer is
+    written onto the profile so the rest of the site skips the browser.
+
+    It is worth measuring rather than assuming. Rendering costs 6 to 13 seconds
+    a page. On alefbatour.com it was the difference between no hotels and all of
+    them; on nahalgasht.com one page went from 19 rows to 1, so rendering was
+    not merely wasted but harmful.
+
+    A page fetched without a render, or after the question is settled, passes
+    through untouched.
+
+    Example:
+        >>> profile = SiteProfile(domain="example.com")
+        >>> page = ExtractedPage(url="https://example.com/t/1", html_raw="<body></body>")
+        >>> _settle_render_question(page, profile, None) is page
+        True
+        >>> profile.rendering.render_helps is None
+        True
+    """
+    if not fetched.html_before_render or not fetched.html_raw:
+        return fetched
+
+    before = fetched.html_before_render
+    plain = extract_page_from_html(fetched.url, before, today=today)
+    rendered_rows = len(
+        extract_page_from_html(fetched.url, fetched.html_raw, fetched.embedded_json,
+                               today=today).rows
+    )
+    helped = rendered_rows > len(plain.rows)
+    profile.rendering.render_helps = helped
+    profile.rendering.notes = (
+        f"rendering a tour page gave {rendered_rows} rows against "
+        f"{len(plain.rows)} without it"
+    )
+
+    fetched.html_before_render = None
+    if helped:
+        fetched.notes.append(f"rendering earned its cost here ({rendered_rows} rows)")
+        return fetched
+
+    # The plain markup was as good or better, so keep it and stop rendering
+    # this site. The browser fetch is already spent; the rest of the site is not.
+    fetched.notes.append(
+        f"rendering gave {rendered_rows} rows against {len(plain.rows)} plain; "
+        "not rendering this site again"
+    )
+    plain.fetch_method = fetched.fetch_method
+    plain.status_code = fetched.status_code
+    plain.fetched_at = fetched.fetched_at
+    plain.content_hash = fetched.content_hash
+    plain.notes = fetched.notes
+    plain.html_raw = before
+    return plain
 
 
 async def _tour_json(

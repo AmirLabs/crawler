@@ -39,6 +39,17 @@ class RenderingInfo:
     links_in_raw_html: int = 0            # links visible without running JS
     links_after_render: Optional[int] = None  # links after running JS (None if not tested)
     needs_playwright: bool = False
+    # Whether rendering a *tour page* of this site actually yields more offers.
+    # Separate from ``needs_playwright``, which is judged from the home page and
+    # answers a different question. ``None`` means it has not been tried yet;
+    # step 3 tries it once per site on the first page that looks like it might
+    # need it, and follows the answer for the rest.
+    #
+    # It is worth measuring rather than guessing: rendering costs 6 to 13
+    # seconds a page and on nahalgasht.com it produced *fewer* rows than the
+    # plain HTML did, while on alefbatour.com it was the difference between no
+    # hotels and all of them.
+    render_helps: Optional[bool] = None
     notes: Optional[str] = None
 
 

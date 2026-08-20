@@ -172,6 +172,11 @@ class ExtractedPage:
     # departures were read and all four have left" need different fixes.
     expired_rows: list[ExtractedRow] = field(default_factory=list)
 
+    # The plain markup, kept only when this page was also rendered, so the
+    # caller can compare what each produced and decide once for the whole site
+    # whether rendering earns its cost. Dropped as soon as that is settled.
+    html_before_render: Optional[str] = None
+
     fetched_at: Optional[str] = None    # ISO timestamp, set by the fetch layer
     content_hash: Optional[str] = None  # skip unchanged pages on a daily refresh
     notes: list[str] = field(default_factory=list)
