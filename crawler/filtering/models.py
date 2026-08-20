@@ -55,8 +55,16 @@ class UrlDiscovery:
     domain: str
     source: str = SOURCE_NONE
 
-    # The output the next step consumes.
+    # The output the next step consumes, newest first where the site says so.
     tour_urls: list[str] = field(default_factory=list)
+
+    # When each URL was last changed, as the sitemap reported it. Sites keep
+    # every tour they have ever sold — alefbatour's sitemap reaches back to
+    # 2017 — so without this the crawl spends its time in the archive and a
+    # sample taken across the list is a sample of tours that no longer run.
+    # Empty for a site whose sitemap omits <lastmod>, which is why the order
+    # is a preference and not a promise.
+    last_modified: dict[str, str] = field(default_factory=dict)
 
     # --- evidence ---------------------------------------------------------- #
     total_seen: int = 0          # URLs examined before any filtering

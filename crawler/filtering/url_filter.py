@@ -13,19 +13,21 @@ from __future__ import annotations
 
 import re
 import asyncio
-from urllib.parse import urlparse, urljoin
+from urllib.parse import unquote, urljoin, urlparse
 from collections import defaultdict
 from typing import Optional
 
 import httpx
 
 from crawler.config import DEFAULT_TIMEOUT_SECONDS, USER_AGENT
+from crawler.extraction.extractor import _resolve_crawl_delay
 from crawler.profiler.models import SiteProfile
 from crawler.filtering.models import (
     UrlDiscovery,
     UrlGroup,
     SOURCE_API,
     SOURCE_SITEMAP,
+    SOURCE_CRAWL,
     SOURCE_NONE,
 )
 
@@ -51,6 +53,11 @@ LISTING_SIGNS = (
 
 MAX_SITEMAP_URLS = 5000  # stop reading a sitemap after this many
 MAX_API_PAGES = 50       # stop paging an API after this many pages
+
+# How many pages the link walk may open per site. Fixed rather than
+# proportional, so the cost of checking a sitemap's honesty does not grow with
+# the site. Sixty was enough to find 144 unlisted tours on bisanseir.com.
+CRAWL_BUDGET_PAGES = 60
 MIN_GROUP_SCORE = 0.5    # a group must score at least this to be selected
 
 
@@ -59,6 +66,17 @@ MIN_GROUP_SCORE = 0.5    # a group must score at least this to be selected
 # ("bali-5-nights", "slug-100") is still a slug, and treating it as an id would
 # split one content type into two groups and drop whichever lost.
 _NUMERIC = re.compile(r"^\d+$")
+
+
+# When a path segment counts as a varying title rather than a fixed section
+# name. The old rule asked the segment to differ across *most* URLs in its
+# bucket, which is wrong wherever a slug legitimately repeats: alefbatour.com
+# publishes one page per departure date under one slug, so 850 URLs share 104
+# slugs and every one of them was read as a fixed word. Measured across the six
+# sites, anything from a 2% to a 10% share gives the same answer, so the value
+# is not delicate — it only has to sit well below "most".
+_MIN_DISTINCT_FOR_SLUG = 4
+_SLUG_SHARE = 0.10
 
 
 def _is_identifier(seg: str) -> bool:
@@ -81,7 +99,12 @@ def _group_by_shape(urls: list[str]) -> dict[str, list[str]]:
     originals: dict[tuple, list[str]] = defaultdict(list)
 
     for url in urls:
-        parts = [p for p in urlparse(url).path.split("/") if p]
+        # Percent-encoding has to come off before the shape is read. A Persian
+        # slug arrives as "%d8%aa%d9%88%d8%b1-..." — a run of hex digits that
+        # _is_identifier counts as a number, so the same content type split
+        # into an "<id>" group and a dozen literal ones, and only the largest
+        # was kept. bisanseir.com lost 60 tour URLs to exactly that.
+        parts = [p for p in unquote(urlparse(url).path).split("/") if p]
         if not parts:
             continue
         key = (len(parts), parts[0].lower())
@@ -103,8 +126,8 @@ def _group_by_shape(urls: list[str]) -> dict[str, list[str]]:
                     out.append("<num>")
                 elif _is_identifier(seg):
                     out.append("<id>")
-                elif total >= 4 and distinct[i] > max(2, total * 0.5):
-                    # Varies across most URLs here: a title, not a section name.
+                elif distinct[i] >= max(_MIN_DISTINCT_FOR_SLUG, total * _SLUG_SHARE):
+                    # Varies enough to be a title rather than a section name.
                     out.append("<slug>")
                 else:
                     out.append(seg.lower())  # fixed word: "tour", "d", "blog"
@@ -235,6 +258,56 @@ def _extract_locs(xml: str) -> list[str]:
     return [m.strip() for m in re.findall(r"<loc>\s*(.*?)\s*</loc>", xml, re.I | re.S)]
 
 
+# One <url> entry of a sitemap, which is where a date sits beside its address.
+# <loc> alone cannot be paired with <lastmod>, since a plain findall over the
+# whole document gives two lists that only line up when every entry is dated.
+_URL_ENTRY = re.compile(r"<url>(.*?)</url>", re.I | re.S)
+_LOC_IN = re.compile(r"<loc>\s*(.*?)\s*</loc>", re.I | re.S)
+_LASTMOD_IN = re.compile(r"<lastmod>\s*(.*?)\s*</lastmod>", re.I | re.S)
+
+
+def _extract_dated_locs(xml: str) -> dict[str, str]:
+    """Pull ``{url: lastmod}`` from a sitemap, for the entries that carry one.
+
+    Undated entries are absent rather than empty, so a caller can tell a page
+    the site dated from one it did not. bisanseir.com and tahagasht.com date
+    nothing at all, and their lists simply keep the order they arrived in.
+
+    Example:
+        >>> _extract_dated_locs(
+        ...     '<url><loc>https://x.com/a</loc><lastmod>2026-08-19</lastmod></url>'
+        ...     '<url><loc>https://x.com/b</loc></url>'
+        ... )
+        {'https://x.com/a': '2026-08-19'}
+    """
+    dated: dict[str, str] = {}
+    for entry in _URL_ENTRY.findall(xml):
+        loc = _LOC_IN.search(entry)
+        lastmod = _LASTMOD_IN.search(entry)
+        if loc and lastmod:
+            dated[loc.group(1).strip()] = lastmod.group(1).strip()
+    return dated
+
+
+def _newest_first(urls: list[str], dated: dict[str, str]) -> list[str]:
+    """Order URLs by the date the site last changed them, newest first.
+
+    Undated URLs keep their own order and go last: nothing is dropped for
+    lacking a date, it simply cannot be ranked.
+
+    Example:
+        >>> _newest_first(
+        ...     ["https://x.com/old", "https://x.com/undated", "https://x.com/new"],
+        ...     {"https://x.com/old": "2024-01-01", "https://x.com/new": "2026-08-19"},
+        ... )
+        ['https://x.com/new', 'https://x.com/old', 'https://x.com/undated']
+    """
+    known = [u for u in urls if u in dated]
+    unknown = [u for u in urls if u not in dated]
+    known.sort(key=lambda u: dated[u], reverse=True)
+    return known + unknown
+
+
 async def _discover_from_sitemap(
     client: httpx.AsyncClient, profile: SiteProfile
 ) -> UrlDiscovery:
@@ -246,6 +319,7 @@ async def _discover_from_sitemap(
         return result
 
     urls_seen: set[str] = set()
+    dated: dict[str, str] = {}
 
     # Read up to MAX_SITEMAP_URLS
     try:
@@ -253,52 +327,131 @@ async def _discover_from_sitemap(
         if resp.status_code == 200 and "<" in resp.text:
             locs = _extract_locs(resp.text)
 
-            # If it's an index, read a few children
+            # If it's an index, read its children. Every one of them: reading
+            # the first few silently loses whatever the rest hold, and
+            # nahalgasht.com lists six.
             if "<sitemapindex" in resp.text.lower():
-                for child_url in locs[:5]:
+                for child_url in locs:
                     try:
                         child_resp = await client.get(child_url)
                         if child_resp.status_code == 200:
                             child_locs = _extract_locs(child_resp.text)
                             urls_seen.update(child_locs[:MAX_SITEMAP_URLS])
+                            dated.update(_extract_dated_locs(child_resp.text))
                             if len(urls_seen) >= MAX_SITEMAP_URLS:
                                 result.is_partial = True
+                                result.notes.append(
+                                    f"stopped after {MAX_SITEMAP_URLS} URLs; "
+                                    f"the index has {len(locs)} sitemaps"
+                                )
                                 break
                     except Exception:
                         continue
             else:
                 urls_seen.update(locs[:MAX_SITEMAP_URLS])
+                dated.update(_extract_dated_locs(resp.text))
                 if len(locs) > MAX_SITEMAP_URLS:
                     result.is_partial = True
     except Exception as exc:
         result.notes.append(f"sitemap fetch failed: {exc}")
         return result
 
-    result.total_seen = len(urls_seen)
+    selected = _from_urls(profile, sorted(urls_seen), SOURCE_SITEMAP)
+    selected.last_modified = dated
+    selected.is_partial = result.is_partial
+    selected.notes = result.notes + selected.notes
+    # Newest first rather than alphabetical: the list is the whole archive, and
+    # the order decides what a partial run reaches.
+    selected.tour_urls = _newest_first(selected.tour_urls, dated)
+    return selected
 
-    # Group by shape, learning the varying segments from the whole set.
-    shape_map = _group_by_shape(sorted(urls_seen))
 
-    # Score each group. The winner is the shape that looks most like one page
-    # per tour, judged on signals rather than a hardcoded path.
-    groups = [UrlGroup(shape=shape, urls=url_list) for shape, url_list in shape_map.items()]
-    for g in groups:
-        _score_group(g, total_urls=result.total_seen)
+def _same_host(url: str, host: str) -> bool:
+    """Whether ``url`` belongs to ``host``, ignoring a leading ``www.``.
 
-    groups.sort(key=lambda x: (x.score, x.count), reverse=True)
-    if groups and groups[0].score >= MIN_GROUP_SCORE:
-        winner = groups[0]
-        winner.is_selected = True
-        result.tour_urls = sorted(winner.urls)
-        result.total_kept = len(winner.urls)
-    else:
-        best = groups[0].score if groups else 0.0
-        result.notes.append(f"no group scored above {MIN_GROUP_SCORE} (best {best:.2f})")
+    Example:
+        >>> _same_host("https://www.bisanseir.com/tour/x", "bisanseir.com")
+        True
+        >>> _same_host("https://instagram.com/bisanseir", "bisanseir.com")
+        False
+    """
+    return urlparse(url).netloc.replace("www.", "").lower() == host.replace("www.", "").lower()
 
-    result.groups = groups
-    result.rejected_samples = [g.urls[0] for g in groups if not g.is_selected][:5]
 
-    return result
+def _tourish(url: str) -> bool:
+    """Whether a URL's path names a tour, once its encoding is undone.
+
+    Example:
+        >>> _tourish("https://bisanseir.com/tour/%D8%AA%D9%88%D8%B1-%D8%A8%D8%A7%DA%A9%D9%88")
+        True
+        >>> _tourish("https://bisanseir.com/about-us")
+        False
+    """
+    decoded = unquote(urlparse(url).path).lower()
+    return any(word in decoded for word in TOUR_WORDS)
+
+
+async def _discover_from_crawl(
+    client: httpx.AsyncClient,
+    profile: SiteProfile,
+    budget: int,
+    delay: float,
+) -> list[str]:
+    """Walk the site from its home page, collecting tour URLs by following links.
+
+    This exists because a sitemap can be wrong. bisanseir.com lists 276 URLs
+    while the site itself carries at least 144 more tour pages, so its sitemap
+    describes under half of what it sells — and no amount of filtering recovers
+    a URL that was never offered.
+
+    The walk is breadth-first and bounded by ``budget`` pages, which keeps the
+    cost fixed rather than proportional to the site. It is a supplement, not a
+    replacement: what it finds is merged with the sitemap's list and shaped and
+    scored alongside it, so a crawled URL has to look like a tour for the same
+    reasons a listed one does.
+
+    Returns the URLs found, home page included, in the order they were reached.
+    """
+    root = profile.domain if profile.domain.startswith("http") else f"https://{profile.domain}"
+    host = urlparse(root).netloc
+
+    visited: set[str] = set()
+    queue: list[str] = [root]
+    found: list[str] = []
+    opened = 0
+
+    while queue and opened < budget:
+        page_url = queue.pop(0)
+        if page_url in visited:
+            continue
+        visited.add(page_url)
+
+        try:
+            resp = await client.get(page_url)
+        except Exception:
+            continue
+        opened += 1
+        await asyncio.sleep(delay)
+
+        if resp.status_code != 200 or "html" not in resp.headers.get("content-type", "").lower():
+            continue
+
+        for match in re.finditer(r'href\s*=\s*["\']([^"\']+)["\']', resp.text, re.I):
+            href = match.group(1).strip()
+            if not href or href.startswith(("#", "mailto:", "tel:", "javascript:")):
+                continue
+            absolute = urljoin(page_url, href).split("#")[0]
+            if not _same_host(absolute, host):
+                continue
+            if _tourish(absolute):
+                if absolute not in found:
+                    found.append(absolute)
+            # A page is worth walking whether or not it is a tour: the links to
+            # the tours are on the category pages.
+            if absolute not in visited and len(queue) < budget * 2:
+                queue.append(absolute)
+
+    return found
 
 
 # --------------------------------------------------------------------------- #
@@ -306,33 +459,104 @@ async def _discover_from_sitemap(
 # --------------------------------------------------------------------------- #
 
 async def discover_tour_urls(
-    profile: SiteProfile, timeout: float = DEFAULT_TIMEOUT_SECONDS
+    profile: SiteProfile,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    crawl_budget: int = CRAWL_BUDGET_PAGES,
 ) -> UrlDiscovery:
     """Find tour URLs from a profiled site.
 
-    Tries API first (cheapest, exact), then sitemap (good), then gives up. A
-    future version could follow links when neither works, but two paths cover
-    the known sites.
+    Three sources, cheapest first: the site's JSON API, its sitemap, and a
+    bounded walk of its own links. The walk runs *in addition* to the sitemap
+    rather than only when the sitemap fails, because a sitemap can be present,
+    readable, and still wrong — bisanseir.com's lists under half the tours it
+    sells, and a run that trusted it silently lost the rest.
+
+    Crawled URLs are not trusted on their own. They join the sitemap's list and
+    the whole set is shaped and scored together, so a crawled URL is kept for
+    the same reasons a listed one is.
+
+    Pass ``crawl_budget=0`` to skip the walk, which is what a caller wants when
+    it only needs a quick answer and can accept the sitemap's word.
     """
     async with httpx.AsyncClient(
         headers=DEFAULT_HEADERS,
         follow_redirects=True,
         timeout=timeout,
     ) as client:
+        result: Optional[UrlDiscovery] = None
+
         # API path
         if profile.tech.has_json_api:
-            result = await _discover_from_api(client, profile)
-            if result.total_kept > 0:
-                return result
+            found = await _discover_from_api(client, profile)
+            if found.total_kept > 0:
+                result = found
 
         # Sitemap path
-        if profile.sitemap.exists:
-            result = await _discover_from_sitemap(client, profile)
-            if result.total_kept > 0:
-                return result
+        if result is None and profile.sitemap.exists:
+            found = await _discover_from_sitemap(client, profile)
+            if found.total_kept > 0:
+                result = found
 
-    # Nothing worked
-    return UrlDiscovery(domain=profile.domain, source=SOURCE_NONE)
+        if crawl_budget <= 0:
+            return result or UrlDiscovery(domain=profile.domain, source=SOURCE_NONE)
+
+        delay, _ = _resolve_crawl_delay(profile)
+        crawled = await _discover_from_crawl(client, profile, crawl_budget, delay)
+
+    if result is None:
+        # Nothing listed anything; the walk is all there is.
+        return _from_urls(profile, crawled, SOURCE_CRAWL) if crawled else UrlDiscovery(
+            domain=profile.domain, source=SOURCE_NONE
+        )
+
+    added = [url for url in crawled if url not in set(result.tour_urls)]
+    if not added:
+        result.notes.append(f"walked {crawl_budget} pages and found nothing new")
+        return result
+
+    # Re-shape and re-score the two lists together rather than appending: a URL
+    # the sitemap never mentioned still has to earn its place.
+    everything = sorted(set(result.tour_urls) | set(added))
+    merged = _from_urls(profile, everything, result.source)
+    merged.last_modified = result.last_modified
+    merged.total_seen = result.total_seen + len(added)
+    merged.notes = result.notes + [
+        f"walking the site added {merged.total_kept - result.total_kept} tour URLs "
+        f"the {result.source} never listed"
+    ]
+    merged.tour_urls = _newest_first(merged.tour_urls, merged.last_modified)
+    return merged
+
+
+def _from_urls(profile: SiteProfile, urls: list[str], source: str) -> UrlDiscovery:
+    """Shape, score and select a set of URLs, whatever produced them.
+
+    Shared by the sitemap and the walk so both are judged by one rule. Without
+    this the walk would need its own idea of what a tour URL looks like, and
+    two ideas drift apart.
+    """
+    result = UrlDiscovery(domain=profile.domain, source=source)
+    result.total_seen = len(urls)
+
+    groups = [
+        UrlGroup(shape=shape, urls=url_list)
+        for shape, url_list in _group_by_shape(sorted(urls)).items()
+    ]
+    for group in groups:
+        _score_group(group, total_urls=result.total_seen)
+    groups.sort(key=lambda g: (g.score, g.count), reverse=True)
+
+    if groups and groups[0].score >= MIN_GROUP_SCORE:
+        groups[0].is_selected = True
+        result.tour_urls = sorted(groups[0].urls)
+        result.total_kept = len(groups[0].urls)
+    else:
+        best = groups[0].score if groups else 0.0
+        result.notes.append(f"no group scored above {MIN_GROUP_SCORE} (best {best:.2f})")
+
+    result.groups = groups
+    result.rejected_samples = [g.urls[0] for g in groups if not g.is_selected][:5]
+    return result
 
 
 def discover_tour_urls_sync(profile: SiteProfile, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> UrlDiscovery:
