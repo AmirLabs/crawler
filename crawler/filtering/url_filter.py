@@ -60,6 +60,20 @@ MAX_API_PAGES = 50       # stop paging an API after this many pages
 CRAWL_BUDGET_PAGES = 60
 MIN_GROUP_SCORE = 0.5    # a group must score at least this to be selected
 
+# How far below the best-scoring shape another shape may sit and still be kept.
+# Measured against the six sites: the shapes that turned out to be a second
+# genuine tour type scored level with the winner (tahagasht's /tours/item/<slug>
+# at 0.90 beside /tours/<slug> at 0.90), while the junk that also clears the
+# threshold — flight pages, blog posts, seasonal landing pages — sat 0.2 or more
+# below it.
+#
+# It is not free of error. On bisanseir.com it also admits 72 category pages
+# that score level with the winner and yield nothing, against 325 real
+# departure pages recovered on tahagasht.com. Scoring cannot separate those two
+# by shape alone — both are "the plural of the winner" or "one level deeper" —
+# and 72 wasted fetches is the cheaper mistake.
+_SHAPE_MARGIN = 0.1
+
 
 # A slug that is really an identifier: "65694", "d-2291", "a1b2c3d4". The test
 # is that digits dominate the segment — a title that merely contains a number
@@ -547,9 +561,27 @@ def _from_urls(profile: SiteProfile, urls: list[str], source: str) -> UrlDiscove
     groups.sort(key=lambda g: (g.score, g.count), reverse=True)
 
     if groups and groups[0].score >= MIN_GROUP_SCORE:
-        groups[0].is_selected = True
-        result.tour_urls = sorted(groups[0].urls)
-        result.total_kept = len(groups[0].urls)
+        # Every shape that scores level with the best one, not only the best.
+        # A site can publish tours under two shapes and mean both: tahagasht
+        # lists a tour family at /tours/<slug> and each bookable departure at
+        # /tours/item/<slug>, and the departures — 325 pages, all of them real
+        # offers — were being dropped.
+        #
+        # Level with, not merely above the threshold. Keeping everything above
+        # 0.5 would also have taken tahagasht's 1173 flight pages and 358 blog
+        # posts, which sit exactly on the minimum. The winner's own score is the
+        # yardstick, so the bar rises with the confidence of the best answer.
+        best = groups[0].score
+        kept: list[str] = []
+        for group in groups:
+            if group.score >= max(MIN_GROUP_SCORE, best - _SHAPE_MARGIN):
+                group.is_selected = True
+                kept.extend(group.urls)
+        result.tour_urls = sorted(set(kept))
+        result.total_kept = len(result.tour_urls)
+        chosen = [g.shape for g in groups if g.is_selected]
+        if len(chosen) > 1:
+            result.notes.append(f"kept {len(chosen)} shapes: {', '.join(chosen[:4])}")
     else:
         best = groups[0].score if groups else 0.0
         result.notes.append(f"no group scored above {MIN_GROUP_SCORE} (best {best:.2f})")
