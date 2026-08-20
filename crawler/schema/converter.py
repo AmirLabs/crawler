@@ -119,7 +119,9 @@ def _price(value: Optional[Any]) -> Optional[Price]:
     Example:
         >>> _price({"amount": 92000000.0, "currency": "IRT", "foreign_amount": 1090.0,
         ...         "foreign_currency": "EUR", "raw": "92,000,000 تومان + 1,090 یورو"})
-        Price(local=Money(amount=92000000.0, currency='IRT'), foreign=Money(amount=1090.0, currency='EUR'), basis='per_person', raw='92,000,000 تومان + 1,090 یورو')
+        Price(local=Money(amount=92000000.0, currency='IRT'),
+              foreign=Money(amount=1090.0, currency='EUR'), basis='per_person',
+              raw='92,000,000 تومان + 1,090 یورو', flight_included=None)
     """
     if not isinstance(value, dict):
         return None
@@ -136,7 +138,12 @@ def _price(value: Optional[Any]) -> Optional[Price]:
 
     if local is None and foreign is None:
         return None
-    return Price(local=local, foreign=foreign, raw=value.get("raw"))
+    return Price(
+        local=local,
+        foreign=foreign,
+        raw=value.get("raw"),
+        flight_included=value.get("flight_included"),
+    )
 
 
 # Flight times that move a night off the hotel bill. A tour leaving at 22:30

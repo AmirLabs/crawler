@@ -33,13 +33,20 @@ Two things this deliberately refuses to do:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import date, timedelta
 from typing import Optional
 
 from selectolax.parser import HTMLParser
 
 from crawler.extraction.models import METHOD_HEURISTIC_HTML, ExtractedField
-from crawler.extraction.readers.dates import DateText, find_dates, to_iso
+from crawler.extraction.readers.dates import (
+    DateText,
+    find_dates,
+    gregorian_to_jalali,
+    to_iso,
+)
+from crawler.extraction.readers.labels import detect_nights, detect_star_rating
 from crawler.extraction.target_fields import ROW_FIELDS, unresolved
 from crawler.extraction.readers.transport import main_text
 from crawler.extraction.structure.hotel_block import (
@@ -65,6 +72,18 @@ _LABEL_WINDOW = 240
 _HOTEL_HEADING_TAGS = ("h1", "h2", "h3", "h4", "strong", "b")
 _MAX_HOTELS = 6
 
+# How a page says the flight is charged separately. Matched as a phrase, since
+# "پرواز" alone appears in every itinerary on these sites.
+_FLIGHT_EXTRA = re.compile(r"(هزینه|قیمت)\s*پرواز|\+\s*پرواز|بدون\s*(بلیط|پرواز)")
+
+# Where a page states the hotel's grade and the tour's length. Both are read
+# from a window after their label rather than from the whole page: the page also
+# describes a hotel per city and a night count per city, and the first match
+# found was the wrong one.
+_STAR_LABELS = ("هتل:", "هتل :", "ستاره هتل")
+_NIGHT_LABELS = ("مدت تور", "مدت سفر", "مدت اقامت", "مدت")
+_LABEL_VALUE_WINDOW = 40
+
 # How a value filled in from the page is marked, so it is never read back as
 # something found in the row itself.
 _PAGE_SCOPE = f"{METHOD_HEURISTIC_HTML}:page"
@@ -87,6 +106,11 @@ class PageFacts:
     departure: Optional[DateText] = None
     return_: Optional[DateText] = None
     hotel_names: list[str] = field(default_factory=list)
+    nights: Optional[int] = None
+    star_rating: Optional[int] = None
+    # ``False`` when the page says the flight is charged on top, ``None`` when
+    # it says nothing. Never ``True`` by inference: silence is not a promise.
+    flight_included: Optional[bool] = None
 
     @property
     def hotels(self) -> Optional[str]:
@@ -242,12 +266,22 @@ def apply_page_facts(rows: list, facts: PageFacts) -> int:
             ("departure_date", _date_value(facts.departure)),
             ("return_date", _date_value(facts.return_)),
             ("hotel_name", facts.hotels),
+            ("nights", facts.nights),
+            ("hotel_star_rating", facts.star_rating),
         ):
             if value is None or name in row.fields:
                 continue
             row.fields[name] = ExtractedField(value, METHOD_HEURISTIC_HTML, _PAGE_SCOPE)
             row.attempts.pop(name, None)
             filled += 1
+
+        # Whether the flight is extra belongs *on* the price rather than beside
+        # it: a row without a price has nothing for the flag to qualify.
+        price = row.fields.get("price")
+        if facts.flight_included is not None and price is not None:
+            if isinstance(price.value, dict) and "flight_included" not in price.value:
+                price.value["flight_included"] = facts.flight_included
+                filled += 1
         row.unresolved_fields = unresolved(row.fields, ROW_FIELDS)
     return filled
 
@@ -266,6 +300,38 @@ def _date_value(parsed: Optional[DateText]) -> Optional[dict]:
     return {"iso": to_iso(parsed), "raw": parsed.raw, "time": parsed.time}
 
 
+def _derive_return(
+    departure: Optional[DateText], nights: Optional[int]
+) -> Optional[DateText]:
+    """Work out when a tour comes back, when the page gives length instead.
+
+    liyaseir.com states "مدت تور: 12 شب و 13 روز" and "حرکت: 15 شهریور" and
+    never prints a return date at all. Departure plus nights is arithmetic, not
+    a guess — the one thing a tour of N nights certainly does is end N days
+    later.
+
+    The result keeps the derived day in ``raw`` so the output shows plainly that
+    the site did not print it.
+
+    Example:
+        >>> out = find_dates("15 شهریور")[0]
+        >>> to_iso(out), to_iso(_derive_return(out, 12))
+        ('2026-09-06', '2026-09-18')
+        >>> _derive_return(out, 12).raw
+        '15 شهریور + 12 شب'
+    """
+    if departure is None or not nights:
+        return None
+    iso = to_iso(departure)
+    if not iso:
+        return None
+    ending = date.fromisoformat(iso) + timedelta(days=nights)
+    derived = replace(departure, raw=f"{departure.raw} + {nights} شب", time=None)
+    jy, jm, jd = gregorian_to_jalali(ending.year, ending.month, ending.day)
+    derived.year, derived.month, derived.day = jy, jm, jd
+    return derived
+
+
 def read_page_facts(html: str) -> PageFacts:
     """Everything a page states once, for the rows that state nothing.
 
@@ -275,6 +341,47 @@ def read_page_facts(html: str) -> PageFacts:
         ...     '<h2>هتل‌های محل اقامت</h2><div>GRAND HYATT SHANGHAI</div></body>')
         >>> facts.departure.day, facts.return_.day, facts.hotels
         (6, 16, 'GRAND HYATT SHANGHAI')
+        >>> flight = read_page_facts('<body>دو تخته 3790 دلار + هزینه پرواز</body>')
+        >>> flight.flight_included
+        False
     """
-    departure, returning = read_dates(main_text(html))
-    return PageFacts(departure=departure, return_=returning, hotel_names=read_hotels(html))
+    text = main_text(html)
+    departure, returning = read_dates(text)
+    nights = _labelled(text, _NIGHT_LABELS, detect_nights, _LABEL_VALUE_WINDOW)
+    if returning is None:
+        returning = _derive_return(departure, nights)
+
+    return PageFacts(
+        departure=departure,
+        return_=returning,
+        hotel_names=read_hotels(html),
+        nights=nights,
+        star_rating=_labelled(text, _STAR_LABELS, detect_star_rating, _LABEL_VALUE_WINDOW),
+        flight_included=False if _FLIGHT_EXTRA.search(text) else None,
+    )
+
+
+def _labelled(text: str, labels: tuple[str, ...], reader, window: int) -> Optional[int]:
+    """Read a number from a short window after a label, not from the page.
+
+    The page is the wrong scope for these. liyaseir writes "مدت تور: 12 شب و 13
+    روز" at the top and "مقصد: 4 شب سئول + 4 شب پکن + 4 شب شانگهای" underneath,
+    so reading nights from the whole page found 4 — and, because the return date
+    is derived from it, gave a twelve-night tour a four-night one's return.
+
+    Example:
+        >>> _labelled("مدت تور: 12 شب و 13 روز مقصد: 4 شب سئول",
+        ...           ("مدت تور",), detect_nights, 30)
+        12
+        >>> _labelled("روز سوم بازدید از یک هتل 4 ستاره",
+        ...           ("هتل:",), detect_star_rating, 40) is None
+        True
+    """
+    for label in labels:
+        at = text.find(label)
+        while at >= 0:
+            found = reader(text[at: at + window])
+            if found is not None:
+                return found
+            at = text.find(label, at + 1)
+    return None

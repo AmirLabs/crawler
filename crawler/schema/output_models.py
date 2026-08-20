@@ -138,9 +138,28 @@ class Price:
     basis: str = BASIS_PER_PERSON
     raw: Optional[str] = None        # text as printed, kept for traceability
 
+    # Whether the flight is in this figure. ``None`` means the page did not say,
+    # which is not the same as "yes" — the difference decides whether two sites
+    # can be compared at all. liyaseir.com quotes "3790 دلار + هزینه پرواز" on
+    # every page and nahalgasht.com on nine of ten: an amount that looks far
+    # cheaper than a rival's only because the flight is still to be added.
+    flight_included: Optional[bool] = None
+
     @property
     def is_empty(self) -> bool:
         return self.local is None and self.foreign is None
+
+    @property
+    def is_complete(self) -> bool:
+        """Whether this is the whole cost of travelling, as far as the page said.
+
+        Example:
+            >>> Price(local=Money(3790, "USD"), flight_included=False).is_complete
+            False
+            >>> Price(local=Money(3790, "USD")).is_complete
+            True
+        """
+        return not self.is_empty and self.flight_included is not False
 
 
 @dataclass
@@ -293,12 +312,16 @@ def _price_columns(prefix: str, price: Optional[Price]) -> dict:
             f"{prefix}_price_foreign": None,
             f"{prefix}_price_foreign_currency": None,
             f"{prefix}_price_basis": None,
+            f"{prefix}_price_includes_flight": None,
         }
     return {
         f"{prefix}_price": price.local.amount if price.local else None,
         f"{prefix}_price_currency": price.local.currency if price.local else None,
         f"{prefix}_price_foreign": price.foreign.amount if price.foreign else None,
         f"{prefix}_price_foreign_currency": price.foreign.currency if price.foreign else None,
+        # Carried beside every amount rather than once per row: a page can quote
+        # one price with the flight and another without.
+        f"{prefix}_price_includes_flight": price.flight_included,
         f"{prefix}_price_basis": price.basis,
     }
     
