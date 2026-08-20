@@ -29,8 +29,10 @@ from crawler.config import (
     DEFAULT_TIMEOUT_SECONDS,
     MAX_CRAWL_DELAY_SECONDS,
     MIN_CRAWL_DELAY_SECONDS,
+    RENDER_SETTLE_SECONDS,
     USER_AGENT,
 )
+from crawler.extraction.rendering import needs_rendering
 from crawler.profiler.models import SiteProfile
 from crawler.utils.http import get_with_retry
 from crawler.extraction.models import (
@@ -222,9 +224,23 @@ async def _fetch_playwright(url: str, timeout: float) -> ExtractedPage:
                 )
 
             browser_page = await browser.new_page(user_agent=USER_AGENT)
+            # "networkidle" never arrives on a page with analytics or a live
+            # socket — it timed out on every alefbatour tour page. Wait for the
+            # content instead: the template placeholders disappearing is what
+            # "finished" actually means here.
             response = await browser_page.goto(
-                url, wait_until="networkidle", timeout=timeout * 1000
+                url, wait_until="domcontentloaded", timeout=timeout * 1000
             )
+            try:
+                await browser_page.wait_for_load_state(
+                    "networkidle", timeout=RENDER_SETTLE_SECONDS * 1000
+                )
+            except Exception:
+                # Whatever rendered by now is still better than the raw
+                # template, so this is worth a note rather than a failure.
+                page.notes.append(
+                    f"network had not settled after {RENDER_SETTLE_SECONDS}s"
+                )
             html = await browser_page.content()
             await browser.close()
 
@@ -248,12 +264,17 @@ async def fetch_page(
     client: Optional[httpx.AsyncClient] = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> ExtractedPage:
-    """Fetch one tour URL using the strategy the site profile recommends.
+    """Fetch one tour URL, using a browser when the markup turns out to need one.
 
-    Playwright is used only when the profiler found the site needs JavaScript
-    to render (``profile.rendering.needs_playwright``); every other case is a
-    plain HTTP GET, reusing ``client`` when the caller is fetching many URLs
-    from the same site.
+    The profiler's ``needs_playwright`` decides the first attempt. It is a
+    judgement about the *site*, made from its home page, and that is not always
+    the right answer for a tour page: alefbatour.com serves a home page built on
+    the server and tour pages whose hotel list is left as ``{{ }}`` for
+    JavaScript to fill. So a cheap HTTP fetch that comes back holding template
+    placeholders is fetched again with the browser.
+
+    The second fetch costs a browser launch, so it happens only when the markup
+    says it is needed, and never twice for one URL.
 
     Example:
         >>> profile = SiteProfile(domain="example.com")
@@ -265,12 +286,23 @@ async def fetch_page(
         return await _fetch_playwright(url, timeout=timeout)
 
     if client is not None:
-        return await _fetch_http(client, url)
+        page = await _fetch_http(client, url)
+    else:
+        async with httpx.AsyncClient(
+            headers=DEFAULT_HEADERS, follow_redirects=True, timeout=timeout
+        ) as owned_client:
+            page = await _fetch_http(owned_client, url)
 
-    async with httpx.AsyncClient(
-        headers=DEFAULT_HEADERS, follow_redirects=True, timeout=timeout
-    ) as owned_client:
-        return await _fetch_http(owned_client, url)
+    if page.html_raw and needs_rendering(page.html_raw):
+        rendered = await _fetch_playwright(url, timeout=timeout)
+        if rendered.html_raw:
+            rendered.notes = page.notes + [
+                "served markup still held template placeholders; rendered instead"
+            ] + rendered.notes
+            return rendered
+        page.notes.append(f"needed rendering but it failed: {rendered.error}")
+
+    return page
 
 
 async def fetch_pages(

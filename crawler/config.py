@@ -47,3 +47,8 @@ LLM_MODEL = os.getenv("CRAWLER_LLM_MODEL", "gpt-4o-mini")
 # OpenAI direct. Only worth setting if the calls are ever routed through
 # something else.
 LLM_BASE_URL = os.getenv("CRAWLER_LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+
+# How long to let a rendered page finish filling its templates in. Eight
+# seconds cleared every alefbatour tour page tested; the wait ends as soon as
+# the placeholders are gone, so this is a ceiling and not a cost per page.
+RENDER_SETTLE_SECONDS = float(os.getenv("CRAWLER_RENDER_SETTLE_SECONDS", "8.0"))
