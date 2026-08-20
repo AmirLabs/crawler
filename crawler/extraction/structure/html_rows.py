@@ -72,6 +72,31 @@ _SAME_TOUR_SIMILARITY = 0.6
 # A group must reach this to be worth treating as the page's offer rows.
 MIN_ROW_SCORE = 0.5
 
+# Headings a site prints above a strip of *other* tours. A block under one of
+# these is an advertisement, not this page's offers, and reading it records
+# another tour's prices as this one's — the worst thing the extractor can do,
+# because a wrong row is trusted while an empty one is visible.
+#
+# Note what is deliberately absent: "سایر تاریخ های برگزاری". alefbatour prints
+# that above the *same* tour's other departures, which are genuine offers. The
+# word "سایر" alone would sink them, so the phrases below all name tours rather
+# than dates.
+_OTHER_TOURS_HEADINGS = (
+    "تورهای پیشنهادی",
+    "تور های پیشنهادی",
+    "سایر پیشنهادات",
+    "پیشنهادهای مشابه",
+    "تورهای مشابه",
+    "تور های مشابه",
+    "تورهای مرتبط",
+    "دیگر تورها",
+    "تورهای دیگر",
+)
+
+# How far to look back and up for the heading that introduces a block.
+_HEADING_LEVELS = 4
+_HEADING_MAX_CHARS = 60
+
 # Classes carrying a generated id rather than a meaning: Elementor stamps every
 # widget with its own ``elementor-element-af40c31``. Left in the signature they
 # make each sibling unique, so a repeating list stops looking repeated — which
@@ -207,6 +232,54 @@ def _is_same_tour(url_a: str, url_b: str) -> bool:
     return len(a & b) / max(len(a), len(b)) >= _SAME_TOUR_SIMILARITY
 
 
+def heading_above(container: RowContainer) -> Optional[str]:
+    """The short piece of text a page prints just before a block.
+
+    Found by walking back through earlier siblings and then up a level, which
+    is how these pages are built: the heading is a sibling of the list, or of
+    the wrapper around it. Only short text counts — a long run before a block is
+    the previous section, not a title for this one.
+
+    Example:
+        >>> tree = HTMLParser(
+        ...     '<section><h3>سایر پیشنهادات</h3>'
+        ...     '<ul><li>تور کیش 20,000,000 تومان</li>'
+        ...     '<li>تور مشهد 15,000,000 تومان</li></ul></section>'
+        ... )
+        >>> heading_above(find_row_containers(tree)[0])
+        'سایر پیشنهادات'
+    """
+    if not container.members:
+        return None
+
+    node: Optional[Node] = container.members[0].parent
+    for _ in range(_HEADING_LEVELS):
+        if node is None or node.tag in ("body", "html", "-undef"):
+            return None
+        previous = node.prev
+        while previous is not None:
+            text = " ".join((previous.text(deep=True) or "").split())
+            if 3 <= len(text) <= _HEADING_MAX_CHARS:
+                return text
+            previous = previous.prev
+        node = node.parent
+    return None
+
+
+def _names_other_tours(heading: Optional[str]) -> Optional[str]:
+    """The phrase that marks a heading as introducing somebody else's tours.
+
+    Example:
+        >>> _names_other_tours("سایر تورهای پیشنهادی")
+        'تورهای پیشنهادی'
+        >>> _names_other_tours("سایر تاریخ های برگزاری") is None
+        True
+    """
+    if not heading:
+        return None
+    return next((phrase for phrase in _OTHER_TOURS_HEADINGS if phrase in heading), None)
+
+
 def score_row_container(
     container: RowContainer, page_url: Optional[str] = None
 ) -> float:
@@ -266,24 +339,30 @@ def score_row_container(
         score += 0.15
         reasons.append("sits deep in the page")
 
-    # --- where the members link ------------------------------------------- #
-    if page_url:
-        linked: list[str] = []
-        for member in container.members:
-            anchor = member.css_first("a[href]")
-            if anchor is not None:
-                href = anchor.attributes.get("href") or ""
-                if href and not href.startswith("#"):
-                    linked.append(href)
-
-        if len(linked) >= container.count * _LINK_MAJORITY and linked:
+    # --- whose tours are these -------------------------------------------- #
+    # The page says so above the block. This replaced a rule that compared the
+    # members' link slugs against the page's own, which was a coin flip: the
+    # same kind of nahalgasht strip scored 0.85 on one page and 0.10 on
+    # another, because its variants differ by hotel name in the slug. A heading
+    # is what the site actually wrote, and it reads the same on every site.
+    other = _names_other_tours(heading_above(container))
+    if other:
+        score -= 0.6
+        reasons.append(f"sits under a heading for other tours ('{other}')")
+    elif page_url:
+        # Links still help when they agree, but only as a small confirmation
+        # now — never as the 0.6 penalty that used to sink genuine blocks.
+        linked = [
+            (member.css_first("a[href]").attributes.get("href") or "")
+            for member in container.members
+            if member.css_first("a[href]") is not None
+        ]
+        linked = [href for href in linked if href and not href.startswith("#")]
+        if linked and len(linked) >= container.count * _LINK_MAJORITY:
             same = sum(1 for href in linked if _is_same_tour(page_url, href))
             if same >= len(linked) * _LINK_MAJORITY:
                 score += 0.15
                 reasons.append("members link to this same tour on other dates")
-            else:
-                score -= 0.6
-                reasons.append("members link to other tours")
 
     container.score = max(0.0, min(1.0, score))
     container.reasons = reasons
