@@ -84,6 +84,9 @@ _NOT_A_NAME = (
     # survives every other test.
     "قیمت",
     "خرید",
+    # The meal wording arrives split from its code — "با صبحانه" in one element
+    # and "(BB)" in the next — so detect_board_type cannot see it whole.
+    "صبحانه",
 )
 
 _HAS_LETTER = re.compile(r"[^\W\d_]", re.UNICODE)
@@ -338,16 +341,26 @@ def read_hotel_block(container: RowContainer) -> HotelBlock:
     row_texts = container.texts()
     extra = _extra_text(block, row_texts)
 
+    # Every name, not just the first: a tour that moves city sleeps in two
+    # hotels on one price, and naming only the first hides half the stay.
+    #
+    # But two names printed back to back are one hotel written twice, not two
+    # hotels. alefbatour puts the Persian and Latin names in adjacent spans —
+    # "هتل باکسوز ارمنستان" then "BAXOS YEREVAN" — while bisanseir separates
+    # real second hotels with their own labels. So a name only counts as a new
+    # hotel when something that is not a name came between.
     names: list[str] = []
+    open_run = False
     for node in block.css("*"):
         own = _clean(node.text(deep=False))
         if not own or own not in extra:
             continue  # belongs to a row, not to the block
-        # Every name, not the first: a tour that moves city sleeps in two
-        # hotels on one price, and naming only the first hides half the stay.
-        # These pages print each name twice, so a repeat is dropped.
-        if _looks_like_a_name(own) and own not in names:
+        if not _looks_like_a_name(own):
+            open_run = False
+            continue
+        if not open_run and own not in names:
             names.append(own)
+        open_run = True
     name = " + ".join(names) if names else None
 
     # The name must come from the block itself, but a rating or a board code
