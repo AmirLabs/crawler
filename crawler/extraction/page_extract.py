@@ -56,6 +56,7 @@ from crawler.extraction.models import (
     record_attempt,
 )
 from crawler.extraction.availability import find_closed_notice, split_by_availability
+from crawler.extraction.page_facts import apply_page_facts, read_page_facts
 from crawler.extraction.row_mapping import map_blocks
 from crawler.extraction.tour_api import api_url_for, enrich_from_api, fetch_tour_json
 from crawler.extraction.readers.transport import detect_transport, main_text
@@ -267,7 +268,16 @@ def extract_page_from_html(
         )
         return page
 
-    page.rows, page.expired_rows = split_by_availability(map_blocks(blocks), today)
+    rows = map_blocks(blocks)
+    # Some sites state the departure and the hotels once, above or below the
+    # price table, and leave the rows saying only "2 تخته". Those facts are
+    # filled in before availability is judged, so a page-level departure can
+    # retire a page-level offer.
+    facts = read_page_facts(html)
+    added = apply_page_facts(rows, facts)
+    page.rows, page.expired_rows = split_by_availability(rows, today)
+    if added:
+        page.notes.append(f"filled {added} fields from facts stated once for the page")
     page.notes.append(
         f"rows from {len(blocks)} x {blocks[0].signature} "
         f"(score {blocks[0].score:.2f}, first at {blocks[0].path})"
