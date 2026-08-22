@@ -84,6 +84,10 @@ _STAR_LABELS = ("هتل:", "هتل :", "ستاره هتل")
 _NIGHT_LABELS = ("مدت تور", "مدت سفر", "مدت اقامت", "مدت")
 _LABEL_VALUE_WINDOW = 40
 
+# A tour page whose length is nowhere labelled almost always says it in the page
+# title: "تور بدروم 6 شب تابستان 1405". Read there as a last resort.
+_TITLE_MAX_CHARS = 120
+
 # How a value filled in from the page is marked, so it is never read back as
 # something found in the row itself.
 _PAGE_SCOPE = f"{METHOD_HEURISTIC_HTML}:page"
@@ -237,6 +241,35 @@ def read_hotels(html: str) -> list[str]:
     return []
 
 
+def title_nights(html: str) -> Optional[int]:
+    """How many nights the page title says the tour is, if it says.
+
+    Read only when no label states the length. tahagasht.com prints its length
+    in a summary strip whose caption sits *under* the value ("۶ شب و ۷ روز" over
+    "تعداد روز و شب"), so no label precedes it; alefbatour and avisatravel never
+    label it at all. All three do put it in the title.
+
+    The ``<title>`` is used and not the ``<h1>``, which was measured on 48 pages
+    across the seven sites: the title agreed with the labelled value 7 times out
+    of 7 and supplied it alone on 17 more pages, while the ``h1`` contradicted
+    the title on 5 — a tahagasht page titled "7 شب و 8 روز" has an ``h1`` that
+    reads 4, from the first city of the itinerary printed beside it.
+
+    Example:
+        >>> title_nights('<html><head><title>تور بدروم 6 شب تابستان 1405</title></head></html>')
+        6
+        >>> title_nights('<html><head><title>تور آلانیا 8مرداد 1405</title></head></html>') is None
+        True
+    """
+    node = HTMLParser(html).css_first("title")
+    if node is None:
+        return None
+    text = " ".join((node.text() or "").split())
+    if not text or len(text) > _TITLE_MAX_CHARS:
+        return None
+    return detect_nights(text)
+
+
 def apply_page_facts(rows: list, facts: PageFacts) -> int:
     """Give the page's own facts to the rows that do not state their own.
 
@@ -348,6 +381,8 @@ def read_page_facts(html: str) -> PageFacts:
     text = main_text(html)
     departure, returning = read_dates(text)
     nights = _labelled(text, _NIGHT_LABELS, detect_nights, _LABEL_VALUE_WINDOW)
+    if nights is None:
+        nights = title_nights(html)
     if returning is None:
         returning = _derive_return(departure, nights)
 
