@@ -48,6 +48,7 @@ from crawler.extraction.structure.html_rows import (
     offer_blocks,
 )
 from crawler.extraction.structure.json_paths import flatten_json
+from crawler.extraction.structure.tables import find_rates_tables
 from crawler.extraction.models import (
     METHOD_EXACT_KEY,
     METHOD_HEURISTIC_HTML,
@@ -254,21 +255,29 @@ def extract_page_from_html(
         if name not in page.page_fields:
             record_attempt(page.page_attempts, name, scope)
 
+    # A rates table states its fields in its header, so it needs none of the
+    # shape guessing the block finder does. It is read alongside the blocks
+    # rather than instead of them: a page can carry both, and tahagasht.com's
+    # hotel-choice tours are a table while its fixed packages are a block.
+    table_rows = find_rates_tables(tree, main_text(html))
+
     containers = find_row_containers(tree, page_url=url)
-    if not containers:
-        page.notes.append("no repeating block with prices found")
-        return page
-
     blocks = offer_blocks(containers)
-    if not blocks:
-        best = containers[0]
-        page.notes.append(
-            f"best block scored {best.score:.2f}, below {MIN_ROW_SCORE} "
-            f"({'; '.join(best.reasons)})"
-        )
+
+    if not blocks and not table_rows:
+        if not containers:
+            page.notes.append("no repeating block with prices found")
+        else:
+            best = containers[0]
+            page.notes.append(
+                f"best block scored {best.score:.2f}, below {MIN_ROW_SCORE} "
+                f"({'; '.join(best.reasons)})"
+            )
         return page
 
-    rows = map_blocks(blocks)
+    rows = map_blocks(blocks) + table_rows
+    if table_rows:
+        page.notes.append(f"{len(table_rows)} rows from a rates table")
     # Some sites state the departure and the hotels once, above or below the
     # price table, and leave the rows saying only "2 تخته". Those facts are
     # filled in before availability is judged, so a page-level departure can
@@ -278,10 +287,11 @@ def extract_page_from_html(
     page.rows, page.expired_rows = split_by_availability(rows, today)
     if added:
         page.notes.append(f"filled {added} fields from facts stated once for the page")
-    page.notes.append(
-        f"rows from {len(blocks)} x {blocks[0].signature} "
-        f"(score {blocks[0].score:.2f}, first at {blocks[0].path})"
-    )
+    if blocks:
+        page.notes.append(
+            f"rows from {len(blocks)} x {blocks[0].signature} "
+            f"(score {blocks[0].score:.2f}, first at {blocks[0].path})"
+        )
     if page.expired_rows:
         page.notes.append(f"{len(page.expired_rows)} offers had already departed")
 

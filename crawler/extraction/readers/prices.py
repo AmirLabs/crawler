@@ -53,7 +53,7 @@ _GROUPERS = ",،٬"
 # What each site prints, mapped to the currency we store. Toman and Rial differ
 # by a factor of ten and are both printed in Persian, so the word decides the
 # unit; it is never assumed.
-_CURRENCY_WORDS: dict[str, str] = {
+CURRENCY_WORDS: dict[str, str] = {
     "تومان": CURRENCY_TOMAN,
     "تومن": CURRENCY_TOMAN,
     "ریال": CURRENCY_RIAL,
@@ -69,7 +69,7 @@ _CURRENCY_WORDS: dict[str, str] = {
 # separates a price from a phone number or a tour id.
 _PRICE_RE = re.compile(
     r"(?P<amount>[\d۰-۹٠-٩][\d۰-۹٠-٩" + _GROUPERS + r".]*)"
-    r"\s*(?P<currency>" + "|".join(_CURRENCY_WORDS) + r")"
+    r"\s*(?P<currency>" + "|".join(CURRENCY_WORDS) + r")"
 )
 
 # Joins the two halves of a dual-currency price: "98,000,000 تومان + 260 دلار".
@@ -146,7 +146,7 @@ def find_prices(text: str) -> list[PriceText]:
         found.append(
             PriceText(
                 amount=amount,
-                currency=_CURRENCY_WORDS[match.group("currency")],
+                currency=CURRENCY_WORDS[match.group("currency")],
                 raw=match.group(0),
                 start=match.start(),
                 end=match.end(),

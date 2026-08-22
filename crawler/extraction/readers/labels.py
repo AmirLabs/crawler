@@ -57,14 +57,22 @@ _ROOM_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"(?:سه|۳|3)" + _GAP + r"تخته", ROOM_TRIPLE),
     (r"(?:دو|۲|2)" + _GAP + r"تخته", ROOM_DOUBLE),
     (r"(?:یک|۱|1)" + _GAP + r"تخته", ROOM_SINGLE),
+    # The English words written in Persian letters, which is how a table names
+    # its columns: tahagasht heads them "اتاق دبل" and "اتاق سینگل" rather than
+    # "دو تخته". Kept after the counted forms so "دو تخته" still wins where
+    # both appear.
+    (r"(?:تریپل|تريپل)", ROOM_TRIPLE),
+    (r"(?:دبل|دابل)", ROOM_DOUBLE),
+    (r"(?:سینگل|سينگل)", ROOM_SINGLE),
 )
 
 _ROOM_RE: tuple[tuple[re.Pattern[str], str], ...] = tuple(
     (re.compile(pattern), value) for pattern, value in _ROOM_PATTERNS
 )
 
-# "3 ستاره" / "۴ ستاره" / "هتل: 4 ستاره". The digit may be attached to the word.
-_STAR_RE = re.compile(r"(\d)" + _GAP + r"ستاره")
+# "3 ستاره" / "۴ ستاره" / "هتل: 4 ستاره", and the "5*" a rates table puts in
+# its grade column. The digit may be attached to the word.
+_STAR_RE = re.compile(r"(\d)" + _GAP + r"(?:ستاره|\*)")
 
 # "7 شب" / "2 شب 3 شب" / "مدت تور: 7 شب و 8 روز". Nights, not days: the sites
 # quote both and the schema stores nights.
