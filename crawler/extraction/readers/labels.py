@@ -42,6 +42,51 @@ from crawler.schema.output_models import (
 
 # Zero-width non-joiner, which Persian typing puts inside compound words. It is
 # invisible, so a pattern written without it silently fails to match.
+# Headings a site prints above a strip of *other* tours. A block under one of
+# these is an advertisement, not this page's offers, and reading it records
+# another tour's prices as this one's — the worst thing the extractor can do,
+# because a wrong row is trusted while an empty one is visible.
+#
+# Note what is deliberately absent: "سایر تاریخ های برگزاری". alefbatour prints
+# that above the *same* tour's other departures, which are genuine offers. The
+# word "سایر" alone would sink them, so the phrases below all name tours rather
+# than dates.
+#
+# Lives here rather than in structure/ because two steps read it: the row
+# scorer, which refuses such a block, and main_text, which cuts it out before
+# the page is flattened into one string.
+OTHER_TOURS_HEADINGS: tuple[str, ...] = (
+    "تورهای پیشنهادی",
+    "تور های پیشنهادی",
+    "سایر پیشنهادات",
+    "پیشنهادهای مشابه",
+    "تورهای مشابه",
+    "تور های مشابه",
+    "تورهای مرتبط",
+    "دیگر تورها",
+    "تورهای دیگر",
+)
+
+def names_other_tours(text: Optional[str]) -> Optional[str]:
+    """The phrase in ``text`` that marks it as naming somebody else's tours.
+
+    Two steps ask this, which is why it sits beside the vocabulary rather than
+    inside either of them: the row scorer, about the heading above a block, and
+    ``main_text``, about the text of one element while the tree still stands.
+
+    Example:
+        >>> names_other_tours("سایر تورهای پیشنهادی")
+        'تورهای پیشنهادی'
+        >>> names_other_tours("سایر تاریخ های برگزاری") is None
+        True
+        >>> names_other_tours(None) is None
+        True
+    """
+    if not text:
+        return None
+    return next((phrase for phrase in OTHER_TOURS_HEADINGS if phrase in text), None)
+
+
 _ZWNJ = "‌"
 
 # Optional separator between the parts of a label: a space, a ZWNJ, or nothing.
