@@ -32,6 +32,7 @@ from typing import Optional
 
 from selectolax.parser import HTMLParser
 
+from crawler.extraction.readers.labels import names_other_tours
 from crawler.schema.output_models import (
     TRANSPORT_AIR,
     TRANSPORT_BUS,
@@ -48,6 +49,104 @@ _CHROME_WORDS = ("menu", "nav", "header", "footer", "breadcrumb", "sidebar", "to
 # removes everything inside it, which is never what "this is the site's
 # furniture" should mean.
 _CONTAINER_TAGS = frozenset({"html", "body"})
+
+# How long a run of text may be and still be a heading rather than a section.
+# The real ones measured 12-20 characters ("تورهای مشابه", "سایر تورهای
+# پیشنهادی"); the wrapper holding one starts at 43.
+_HEADING_MAX_CHARS = 60
+
+# How much bigger than its heading a wrapper must be before it counts as the
+# section the heading introduces, and the share of the page a section may never
+# exceed. Both measured on vanrosh, tahagasht and alefbatour: the wrappers
+# between a heading and its section grew 1-2x, the section itself 9-25x.
+_SECTION_GROWTH = 4
+_MAX_SECTION_SHARE = 0.5
+
+
+def _section_of(heading, body_length: int):
+    """The wrapper that holds ``heading`` and the cards under it, and no more.
+
+    Climbing to the top of the page is what a first attempt did, and on
+    tahagasht it took the tour's own FAQ with the strip: 5981 characters cut
+    where the strip is 306. The section is the first wrapper that holds several
+    times more text than the heading line itself, measured on three sites:
+
+        vanrosh      20 -> 20 -> 43 -> 390     the strip is the 9x jump
+        tahagasht    12 -> 306                            the 25x jump
+        alefbatour   12 -> 12 -> 155                      the 13x jump
+
+    Returns ``None`` when no wrapper qualifies before the candidate grows past
+    half the page, which is the shape of a rule about to delete the document.
+    """
+    own = len(" ".join(heading.text(deep=True).split())) or 1
+    node = heading.parent
+    while node is not None and (node.tag or "").lower() not in _CONTAINER_TAGS:
+        size = len(" ".join(node.text(deep=True).split()))
+        if size > body_length * _MAX_SECTION_SHARE:
+            return None
+        if size >= own * _SECTION_GROWTH:
+            return node
+        node = node.parent
+    return None
+
+
+def _drop_other_tours(tree: HTMLParser) -> None:
+    """Cut the strip of somebody else's tours out of the page.
+
+    Every site prints one under a heading of its own, and once the tree is
+    flattened into a string those cards are indistinguishable from the tour's
+    own words. vanrosh left "مدت اقامت" blank on its Bali page, so the reader
+    walked past it and answered 6 from a Kusadasi card further down.
+
+    The heading appears twice, and only one of the two introduces anything:
+
+    * inside a link it is a menu entry that jumps down the page. On vanrosh
+      that one sits 98 characters in, so cutting from it would take the whole
+      page. Only the link itself goes.
+    * anywhere else it is a section heading — ``<h2>`` on vanrosh and
+      alefbatour, ``div.mid-title`` on tahagasht — and :func:`_section_of`
+      says how much below it belongs to the other tours.
+
+    Example:
+        >>> page = ('<body><p>' + 'تور بالی مدت اقامت 7 شب ' * 12 + '</p>'
+        ...         '<section><h2>تورهای مشابه</h2>'
+        ...         '<div>تور کوش آداسی مدت اقامت 6 شب مشاهده تور</div>'
+        ...         '</section><p>سوالات متداول</p></body>')
+        >>> tree = HTMLParser(page)
+        >>> _drop_other_tours(tree)
+        >>> text = " ".join(tree.body.text(deep=True).split())
+        >>> "کوش آداسی" in text, "6 شب" in text, text.endswith("سوالات متداول")
+        (False, False, True)
+    """
+    # Menu entries first: while one is still in the tree every wrapper around
+    # it also reads as a heading, and the outermost of those is the whole
+    # navigation bar.
+    for node in tree.css("a"):
+        text = " ".join(node.text(deep=True).split())
+        if len(text) <= _HEADING_MAX_CHARS and names_other_tours(text):
+            node.decompose()
+
+    body = tree.body
+    body_length = len(" ".join(body.text(deep=True).split())) if body else 0
+    if not body_length:
+        return
+
+    for node in list(tree.css("*")):
+        text = " ".join(node.text(deep=True).split())
+        if len(text) > _HEADING_MAX_CHARS or not names_other_tours(text):
+            continue
+        # The heading is the innermost element that carries the phrase; its
+        # wrappers carry it too and would each answer the same question.
+        # ``css`` on a node returns the node itself as well. Compared with
+        # ``!=`` rather than ``is not``: selectolax hands back a fresh wrapper
+        # object each time, so the same element is never the same Python object.
+        if any(kid != node
+               and names_other_tours(" ".join(kid.text(deep=True).split()))
+               for kid in node.css("*")):
+            continue
+        section = _section_of(node, body_length)
+        (section or node).decompose()
+
 
 # Labels that introduce the answer, with how much text after them to read. The
 # value often runs straight into the label with no space — nahalgasht renders
@@ -88,6 +187,7 @@ def main_text(html: str) -> str:
         node.decompose()
     for node in tree.css(_CHROME_TAGS):
         node.decompose()
+    _drop_other_tours(tree)
     for node in tree.css("*"):
         # ``css("*")`` walks over <body> too, and a theme is free to name
         # itself after the furniture: vanrosh's WordPress body carries
