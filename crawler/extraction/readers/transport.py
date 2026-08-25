@@ -44,6 +44,11 @@ from crawler.schema.output_models import (
 _CHROME_TAGS = "nav,header,footer,aside"
 _CHROME_WORDS = ("menu", "nav", "header", "footer", "breadcrumb", "sidebar", "topbar")
 
+# The elements that hold the page rather than being part of it. Removing one
+# removes everything inside it, which is never what "this is the site's
+# furniture" should mean.
+_CONTAINER_TAGS = frozenset({"html", "body"})
+
 # Labels that introduce the answer, with how much text after them to read. The
 # value often runs straight into the label with no space — nahalgasht renders
 # "حمل و نقل تورهواپیما" — so a fixed window is read rather than a word.
@@ -67,11 +72,16 @@ def main_text(html: str) -> str:
     """The page's own words, with the site's furniture removed.
 
     Menus, headers and footers list every kind of tour the agency sells, so
-    they answer for tours they have nothing to do with.
+    they answer for tours they have nothing to do with. What holds the page —
+    <body> and <html> — is never furniture, whatever its class is named.
 
     Example:
         >>> main_text('<body><nav>تور مشهد با قطار</nav><p>پرواز مستقیم</p></body>')
         'پرواز مستقیم'
+        >>> main_text('<body class="page-template-elementor_header_footer">'
+        ...           '<div class="site-header">منو</div>'
+        ...           '<p>تاریخ رفت 9 مهرماه</p></body>')
+        'تاریخ رفت 9 مهرماه'
     """
     tree = HTMLParser(html)
     for node in tree.css("script,style,noscript"):
@@ -79,6 +89,14 @@ def main_text(html: str) -> str:
     for node in tree.css(_CHROME_TAGS):
         node.decompose()
     for node in tree.css("*"):
+        # ``css("*")`` walks over <body> too, and a theme is free to name
+        # itself after the furniture: vanrosh's WordPress body carries
+        # ``page-template-elementor_header_footer``, which contains "header".
+        # Measured on the live page, removing it took the text from 2707
+        # characters to 12 — the whole site went blind to dates, nights,
+        # transport, stars and the "not running" notices.
+        if (node.tag or "").lower() in _CONTAINER_TAGS:
+            continue
         attributes = (node.attributes.get("class") or "") + " " + (node.attributes.get("id") or "")
         if any(word in attributes.lower() for word in _CHROME_WORDS):
             node.decompose()
