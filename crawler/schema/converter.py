@@ -113,6 +113,34 @@ def _tour_date(value: Optional[Any]) -> TourDate:
     return TourDate()
 
 
+def _without_zero_half(
+    amount: Optional[float], foreign_amount: Optional[float]
+) -> tuple[Optional[float], Optional[float]]:
+    """Drop the half of a two-part price that  is zero beside a real number.
+
+    avisatravel's own API answers ``0 IRT + 950 EUR`` for a single room: the
+    Toman half was never filled in and the 950 is the price. Kept, the zero
+    reaches the client as "a single room costs nothing", and a wrong number
+    costs more than a missing one.
+
+    A zero standing alone is left alone. There the site has said zero with
+    nothing beside it to contradict it, and that is the site's statement to
+    make. Measured over the 165 audited rows of alefbatour and avisatravel:
+    10 lone zeros, 1 zero beside a real number.
+
+    Example:
+        >>> _without_zero_half(0.0, 950.0)
+        (None, 950.0)
+        >>> _without_zero_half(0.0, None)
+        (0.0, None)
+    """
+    if amount == 0 and foreign_amount not in (None, 0):
+        return None, foreign_amount
+    if foreign_amount == 0 and amount not in (None, 0):
+        return amount, None
+    return amount, foreign_amount
+
+
 def _price(value: Optional[Any]) -> Optional[Price]:
     """Build a :class:`Price`, keeping both currency halves.
 
@@ -127,9 +155,12 @@ def _price(value: Optional[Any]) -> Optional[Price]:
         return None
 
     amount, currency = value.get("amount"), value.get("currency")
-    local = Money(amount=amount, currency=currency) if amount is not None and currency else None
-
     foreign_amount, foreign_currency = value.get("foreign_amount"), value.get("foreign_currency")
+    # ``raw`` is deliberately left as printed, so a dropped zero can still be
+    # traced back to what the source actually said.
+    amount, foreign_amount = _without_zero_half(amount, foreign_amount)
+
+    local = Money(amount=amount, currency=currency) if amount is not None and currency else None
     foreign = (
         Money(amount=foreign_amount, currency=foreign_currency)
         if foreign_amount is not None and foreign_currency
