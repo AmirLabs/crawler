@@ -37,6 +37,7 @@ from urllib.parse import unquote, urlparse
 
 from selectolax.parser import HTMLParser, Node
 
+from crawler.extraction.readers.labels import names_other_tours
 from crawler.extraction.readers.prices import find_prices
 
 # Elements that never hold page content worth reading as a row.
@@ -69,26 +70,6 @@ _LINK_MAJORITY_STRICT = 0.8
 # A group must reach this to be worth treating as the page's offer rows.
 MIN_ROW_SCORE = 0.5
 
-# Headings a site prints above a strip of *other* tours. A block under one of
-# these is an advertisement, not this page's offers, and reading it records
-# another tour's prices as this one's — the worst thing the extractor can do,
-# because a wrong row is trusted while an empty one is visible.
-#
-# Note what is deliberately absent: "سایر تاریخ های برگزاری". alefbatour prints
-# that above the *same* tour's other departures, which are genuine offers. The
-# word "سایر" alone would sink them, so the phrases below all name tours rather
-# than dates.
-_OTHER_TOURS_HEADINGS = (
-    "تورهای پیشنهادی",
-    "تور های پیشنهادی",
-    "سایر پیشنهادات",
-    "پیشنهادهای مشابه",
-    "تورهای مشابه",
-    "تور های مشابه",
-    "تورهای مرتبط",
-    "دیگر تورها",
-    "تورهای دیگر",
-)
 
 # How far to look back and up for the heading that introduces a block.
 _HEADING_LEVELS = 4
@@ -229,20 +210,6 @@ def heading_above(container: RowContainer) -> Optional[str]:
     return None
 
 
-def _names_other_tours(heading: Optional[str]) -> Optional[str]:
-    """The phrase that marks a heading as introducing somebody else's tours.
-
-    Example:
-        >>> _names_other_tours("سایر تورهای پیشنهادی")
-        'تورهای پیشنهادی'
-        >>> _names_other_tours("سایر تاریخ های برگزاری") is None
-        True
-    """
-    if not heading:
-        return None
-    return next((phrase for phrase in _OTHER_TOURS_HEADINGS if phrase in heading), None)
-
-
 def _is_navigation(container: RowContainer) -> bool:
     """Whether this block is a picker that sends the reader somewhere else.
 
@@ -340,7 +307,7 @@ def score_row_container(
     # same kind of nahalgasht strip scored 0.85 on one page and 0.10 on
     # another, because its variants differ by hotel name in the slug. A heading
     # is what the site actually wrote, and it reads the same on every site.
-    other = _names_other_tours(heading_above(container))
+    other = names_other_tours(heading_above(container))
     if other:
         score -= 0.6
         reasons.append(f"sits under a heading for other tours ('{other}')")
