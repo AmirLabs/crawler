@@ -283,10 +283,15 @@ def extract_page_from_html(
     # filled in before availability is judged, so a page-level departure can
     # retire a page-level offer.
     facts = read_page_facts(html)
-    added = apply_page_facts(rows, facts)
+    before = len(rows)
+    rows, added = apply_page_facts(rows, facts)
     page.rows, page.expired_rows = split_by_availability(rows, today)
     if added:
         page.notes.append(f"filled {added} fields from facts stated once for the page")
+    if len(rows) != before:
+        page.notes.append(
+            f"{before} rows x {len(facts.departures)} departures the page states"
+        )
     if blocks:
         page.notes.append(
             f"rows from {len(blocks)} x {blocks[0].signature} "
