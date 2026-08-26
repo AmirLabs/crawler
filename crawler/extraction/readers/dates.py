@@ -75,6 +75,21 @@ _MONTH_ONLY_RE = re.compile(
     r"(?<![\d])(?P<month>" + _MONTH_ALTERNATION + r")\s*ماه(?:\s*(?P<year>\d{4}))?"
 )
 
+# Days listed in front of a dated one, sharing its month: liyaseir writes
+# "12 و 29 مرداد" and vanrosh "9 , 23 مهرماه". Two sites of seven print their
+# departures this way, and reading only the dated one lost 9 مهر, 7 آبان and
+# 12 مرداد — real departures of tours still on sale.
+#
+# Anchored to the end of the run so it only ever matches text that runs
+# straight into a day-and-month date. A bare number anywhere else on the page
+# is a price, a night count or a tour id far more often than a day.
+_LEADING_DAYS_RE = re.compile(r"(?:\d{1,2}\s*[،,وo]\s*)+$")
+_LEADING_DAY_RE = re.compile(r"\d{1,2}")
+
+# How far back to look for such a run. Four days plus their separators fit;
+# more than that and the run would be reaching across a sentence.
+_LEADING_DAYS_WINDOW = 24
+
 # "1405/06/28"
 _SLASH_RE = re.compile(r"(?P<year>\d{4})\s*/\s*(?P<month>\d{1,2})\s*/\s*(?P<day>\d{1,2})")
 
@@ -210,18 +225,32 @@ def _read_time_after(text: str, position: int) -> tuple[Optional[str], int]:
     return f"{hour:02d}:{minute:02d}", position + match.end()
 
 
+def _month_text(parsed: DateText) -> str:
+    """The month as the page spelled it, taken off a date already read.
+
+    Example:
+        >>> _month_text(find_dates("23 مهرماه")[0])
+        'مهرماه'
+    """
+    return re.sub(r"^\s*\d{1,2}\s*", "", parsed.raw).strip()
+
+
 def find_dates(text: str) -> list[DateText]:
     """Find every Jalali date in ``text``, in the order printed.
 
-    Day-and-month dates are read first, then slash dates, then month-only
-    mentions — and a month-only match is dropped when a fuller date already
-    covers that part of the text, so "01 شهریور ماه" yields one date rather
-    than two.
+    Day-and-month dates are read first, then the bare days listed in front of
+    one, then slash dates, then month-only mentions — and a month-only match is
+    dropped when a fuller date already covers that part of the text, so
+    "01 شهریور ماه" yields one date rather than two.
 
     Example:
         >>> find_dates("رفت 07 شهریور ساعت : 22:30 برگشت 16 شهریور ساعت : 02:00")
         [DateText(raw='07 شهریور ساعت : 22:30', month=6, day=7, year=None, time='22:30', start=4, end=26),
          DateText(raw='16 شهریور ساعت : 02:00', month=6, day=16, year=None, time='02:00', start=33, end=55)]
+        >>> [d.raw for d in find_dates("25 تیر، 12 و 29 مرداد، 19 شهریور")]
+        ['25 تیر', '12 مرداد', '29 مرداد', '19 شهریور']
+        >>> [d.raw for d in find_dates("9 , 23 مهرماه | 7 , 21 آبان ماه")]
+        ['9 مهرماه', '23 مهرماه', '7 آبان ماه', '21 آبان ماه']
     """
     normalized = normalize_digits(text)
     found: list[DateText] = []
@@ -242,6 +271,34 @@ def find_dates(text: str) -> list[DateText]:
             )
         )
         covered.append((match.start(), end))
+
+    # A run of bare days in front of one of those dates belongs to its month.
+    for parsed in list(found):
+        if parsed.day is None:
+            continue
+        window = normalized[max(0, parsed.start - _LEADING_DAYS_WINDOW): parsed.start]
+        run = _LEADING_DAYS_RE.search(window)
+        if run is None:
+            continue
+        offset = parsed.start - len(window) + run.start()
+        for day in _LEADING_DAY_RE.finditer(run.group(0)):
+            number = int(day.group(0))
+            if not 1 <= number <= 31:
+                continue
+            found.append(
+                DateText(
+                    # The month the site left out is written back in. "9" alone
+                    # would reach the client's raw column meaning nothing, and
+                    # raw is what a wrong date is traced by.
+                    raw=f"{day.group(0)} {_month_text(parsed)}".strip(),
+                    month=parsed.month,
+                    day=number,
+                    year=parsed.year,
+                    start=offset + day.start(),
+                    end=offset + day.end(),
+                )
+            )
+            covered.append((offset + day.start(), offset + day.end()))
 
     for match in _SLASH_RE.finditer(normalized):
         month = int(match.group("month"))
