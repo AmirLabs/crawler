@@ -33,6 +33,7 @@ Two things this deliberately refuses to do:
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from typing import Optional
@@ -107,7 +108,13 @@ class PageFacts:
         True
     """
 
-    departure: Optional[DateText] = None
+    # Every departure the page states, in the order printed. liyaseir writes
+    # "تاریخ‌های برگزاری 25 تیر، 12 و 29 مرداد، 19 شهریور" and vanrosh
+    # "تاریخ رفت 9 , 23 مهرماه | 7 , 21 آبان ماه": one tour, four departures,
+    # one price table serving all of them. Reading only the first took the
+    # oldest, because sites list them in order, and a brazil page still selling
+    # 19 شهریور was thrown away for a 25 تیر that had passed.
+    departures: list[DateText] = field(default_factory=list)
     return_: Optional[DateText] = None
     hotel_names: list[str] = field(default_factory=list)
     nights: Optional[int] = None
@@ -115,6 +122,11 @@ class PageFacts:
     # ``False`` when the page says the flight is charged on top, ``None`` when
     # it says nothing. Never ``True`` by inference: silence is not a promise.
     flight_included: Optional[bool] = None
+
+    @property
+    def departure(self) -> Optional[DateText]:
+        """The first departure, for the callers that want one date."""
+        return self.departures[0] if self.departures else None
 
     @property
     def hotels(self) -> Optional[str]:
@@ -146,24 +158,62 @@ def _first_date_after(text: str, labels: tuple[str, ...]) -> tuple[Optional[Date
     return None, -1
 
 
-def read_dates(text: str) -> tuple[Optional[DateText], Optional[DateText]]:
-    """The tour's own departure and return, as the page states them.
+def _departures_after(text: str, at: int, first: DateText) -> list[DateText]:
+    """Every departure printed with ``first``, deduplicated, in page order.
 
-    A return is read only where the page labels one. Without that rule the
-    second date on a liyaseir page — a repeat of the departure under
-    "تاریخ‌های برگزاری" — became a return on the day the tour left.
+    The window stops at the first return label. Without that, alefbatour's
+    "پرواز رفت ... ۰۶ شهریور ... پرواز برگشت ... ۱۶ شهریور" sits inside one
+    window and the return would be counted as a second departure — which would
+    then multiply every row by a date the tour comes home on.
+
+    Example:
+        >>> text = "تاریخ‌های برگزاری 25 تیر، 12 و 29 مرداد، 19 شهریور مقصد"
+        >>> found = find_dates(text)
+        >>> [(d.day, d.month) for d in _departures_after(text, 0, found[0])]
+        [(25, 4), (12, 5), (29, 5), (19, 6)]
+    """
+    window = text[at: at + _LABEL_WINDOW]
+    for label in _RETURN_LABELS:
+        stop = window.find(label)
+        if stop >= 0:
+            window = window[:stop]
+
+    seen: set[tuple] = set()
+    departures: list[DateText] = []
+    for parsed in [first, *find_dates(window)]:
+        key = (parsed.day, parsed.month, parsed.year)
+        if parsed.day is None or key in seen:
+            continue
+        seen.add(key)
+        departures.append(parsed)
+    return departures or [first]
+
+
+def read_dates(text: str) -> tuple[list[DateText], Optional[DateText]]:
+    """The tour's departures and its return, as the page states them.
+
+    A page may state several departures at once — see :class:`PageFacts` — so
+    the first half of the answer is a list. A return is read only where the
+    page labels one. Without that rule the second date on a liyaseir page — a
+    repeat of the departure under "تاریخ‌های برگزاری" — became a return on the
+    day the tour left.
 
     Example:
         >>> out, back = read_dates("تاریخ رفت 06 شهریور پرواز برگشت 16 شهریور")
-        >>> out.day, back.day
-        (6, 16)
+        >>> [d.day for d in out], back.day
+        ([6], 16)
         >>> out, back = read_dates("حرکت: 15 شهریور تاریخ‌های برگزاری 15 شهریور")
-        >>> out.day, back is None
-        (15, True)
+        >>> [d.day for d in out], back is None
+        ([15], True)
+        >>> out, _ = read_dates("حرکت: 25 تیر، 12 و 29 مرداد، 19 شهریور")
+        >>> [(d.day, d.month) for d in out]
+        [(25, 4), (12, 5), (29, 5), (19, 6)]
     """
     departure, at = _first_date_after(text, _DEPARTURE_LABELS)
     if departure is None:
-        return None, None
+        return [], None
+
+    departures = _departures_after(text, at, departure)
 
     # The return has to be labelled, and has to come after the departure.
     after = text[at + departure.end:]
@@ -171,7 +221,7 @@ def read_dates(text: str) -> tuple[Optional[DateText], Optional[DateText]]:
     if returning is not None and to_iso(returning) and to_iso(departure):
         if to_iso(returning) <= to_iso(departure):
             returning = None  # a "return" before the departure is a repeat
-    return departure, returning
+    return departures, returning
 
 
 def _following(node) -> list:
@@ -270,7 +320,42 @@ def title_nights(html: str) -> Optional[int]:
     return detect_nights(text)
 
 
-def apply_page_facts(rows: list, facts: PageFacts) -> int:
+def _across_departures(rows: list, facts: PageFacts) -> list:
+    """Pair every row with the departure it belongs to, copying where needed.
+
+    A page with four departures and one price table is selling four tours, not
+    one — vanrosh and liyaseir both print it that way, and in both the same
+    table serves every date, which is what makes multiplying right here and
+    wrong where a site prices each date separately.
+
+    A row that states its own departure is paired with ``None`` and never
+    copied: it has already said which date it belongs to.
+
+    Returns ``(row, departure)`` pairs rather than rows, because two copies of
+    one row are equal to each other and their position is the only thing that
+    tells them apart.
+
+    Example:
+        >>> from crawler.extraction.models import ExtractedRow
+        >>> from crawler.extraction.readers.dates import find_dates
+        >>> facts = PageFacts(departures=find_dates("5 و 19 شهریور"))
+        >>> [d.day for _, d in _across_departures([ExtractedRow()] * 2, facts)]
+        [5, 19, 5, 19]
+    """
+    if len(facts.departures) < 2:
+        return [(row, facts.departure) for row in rows]
+
+    paired: list = []
+    for row in rows:
+        if "departure_date" in row.fields:
+            paired.append((row, None))
+            continue
+        for when in facts.departures:
+            paired.append((deepcopy(row), when))
+    return paired
+
+
+def apply_page_facts(rows: list, facts: PageFacts) -> tuple[list, int]:
     """Give the page's own facts to the rows that do not state their own.
 
     A row always wins: a departure printed in the row is about that row, while
@@ -278,26 +363,31 @@ def apply_page_facts(rows: list, facts: PageFacts) -> int:
     ``heuristic_html:page`` so a value shared by every row can never be read
     back as one found in a row.
 
-    Returns how many fields were filled, so a caller can report it.
+    Returns the rows and how many fields were filled. The rows come back
+    because a page stating several departures ends with more of them than it
+    started with — see :func:`_across_departures`.
 
     Example:
         >>> from crawler.extraction.models import ExtractedRow
         >>> from crawler.extraction.readers.dates import find_dates
-        >>> rows = [ExtractedRow(), ExtractedRow()]
-        >>> facts = PageFacts(departure=find_dates("06 شهریور")[0],
-        ...                   hotel_names=["GRAND HYATT SHANGHAI"])
-        >>> apply_page_facts(rows, facts)
+        >>> rows, filled = apply_page_facts(
+        ...     [ExtractedRow(), ExtractedRow()],
+        ...     PageFacts(departures=find_dates("06 شهریور"),
+        ...               hotel_names=["GRAND HYATT SHANGHAI"]))
+        >>> filled
         4
         >>> rows[0].fields["hotel_name"].value
         'GRAND HYATT SHANGHAI'
         >>> rows[0].fields["departure_date"].value["iso"]
         '2026-08-28'
     """
+    paired = _across_departures(rows, facts)
+    rows = [row for row, _ in paired]
     filled = 0
-    for row in rows:
+    for row, mine in paired:
         for name, value in (
-            ("departure_date", _date_value(facts.departure)),
-            ("return_date", _date_value(facts.return_)),
+            ("departure_date", _date_value(mine)),
+            ("return_date", _date_value(facts.return_ or _derive_return(mine, facts.nights))),
             ("hotel_name", facts.hotels),
             ("nights", facts.nights),
             ("hotel_star_rating", facts.star_rating),
@@ -316,7 +406,7 @@ def apply_page_facts(rows: list, facts: PageFacts) -> int:
                 price.value["flight_included"] = facts.flight_included
                 filled += 1
         row.unresolved_fields = unresolved(row.fields, ROW_FIELDS)
-    return filled
+    return rows, filled
 
 
 def _date_value(parsed: Optional[DateText]) -> Optional[dict]:
@@ -379,15 +469,15 @@ def read_page_facts(html: str) -> PageFacts:
         False
     """
     text = main_text(html)
-    departure, returning = read_dates(text)
+    departures, returning = read_dates(text)
     nights = _labelled(text, _NIGHT_LABELS, detect_nights, _LABEL_VALUE_WINDOW)
     if nights is None:
         nights = title_nights(html)
     if returning is None:
-        returning = _derive_return(departure, nights)
+        returning = _derive_return(departures[0] if departures else None, nights)
 
     return PageFacts(
-        departure=departure,
+        departures=departures,
         return_=returning,
         hotel_names=read_hotels(html),
         nights=nights,
