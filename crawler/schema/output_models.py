@@ -276,7 +276,20 @@ class TourOffer:
 
     @property
     def child_price(self) -> Optional[Price]:
-        return self.prices.get(ROOM_CHILD_WITH_BED) or self.prices.get(ROOM_CHILD_NO_BED)
+        """A child travelling with a bed of their own.
+
+        Reading "or کودک بدون تخت" here is what this used to do, and it threw
+        one of the two away on every page that priced both — bisanseir,
+        alefbatour and avisatravel all do. On alefbatour they are plainly
+        different products: 60,990,000 IRT + 135 USD against 63,900,000 IRT
+        with no dollar part at all. Amir's decision: a column each.
+        """
+        return self.prices.get(ROOM_CHILD_WITH_BED)
+
+    @property
+    def child_no_bed_price(self) -> Optional[Price]:
+        """A child sharing a bed, priced separately by every site that sells it."""
+        return self.prices.get(ROOM_CHILD_NO_BED)
 
     @property
     def infant_price(self) -> Optional[Price]:
@@ -415,6 +428,7 @@ class Tour:
             }
             row.update(_price_columns("adult", offer.adult_price))
             row.update(_price_columns("child", offer.child_price))
+            row.update(_price_columns("child_no_bed", offer.child_no_bed_price))
             row.update(_price_columns("infant", offer.infant_price))
             # Single occupancy is a genuinely different price, not a duplicate.
             row.update(_price_columns("single", offer.prices.get(ROOM_SINGLE)))
