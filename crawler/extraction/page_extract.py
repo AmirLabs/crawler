@@ -57,11 +57,17 @@ from crawler.extraction.models import (
     record_attempt,
 )
 from crawler.extraction.availability import find_closed_notice, split_by_availability
+from crawler.extraction.date_links import find_date_links
+
+# How a departure taken from the link that asked for it is marked, so it is
+# never read back as one printed inside the row.
+_DATE_LINK_SCOPE = f"{METHOD_HEURISTIC_HTML}:date_link"
 from crawler.extraction.page_facts import apply_page_facts, read_page_facts
 from crawler.extraction.row_mapping import map_blocks
 from crawler.extraction.tour_api import api_url_for, enrich_from_api, fetch_tour_json
+from crawler.extraction.readers.dates import jalali_to_gregorian
 from crawler.extraction.readers.transport import detect_transport, main_text
-from crawler.extraction.target_fields import PAGE_FIELDS, unresolved
+from crawler.extraction.target_fields import PAGE_FIELDS, ROW_FIELDS, unresolved
 from crawler.profiler.models import SiteProfile
 
 # JSON-LD keys that hold the publisher's logo. Yoast, which several of the
@@ -317,6 +323,7 @@ async def extract_page(
     client: Optional[httpx.AsyncClient] = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     today: Optional[date] = None,
+    follow_dates: bool = True,
 ) -> ExtractedPage:
     """Fetch one tour URL and read everything step 3 knows how to read.
 
@@ -324,12 +331,147 @@ async def extract_page(
     being turned into an empty page: the reason a URL yielded nothing is worth
     as much to the daily refresh as the data would have been.
 
+    ``follow_dates`` is what stops the walk after one step. A page that offers
+    other dates links to them, and each of those pages links back, so the
+    fetches this makes are told not to follow any of their own.
+
     Example:
         >>> profile = SiteProfile(domain="nahalgasht.com")
         >>> page = await extract_page("https://nahalgasht.com/tour/1", profile)
         >>> page.status_code
         200
     """
+    page = await _extract_one(url, profile, client, timeout, today)
+    if not follow_dates or not page.html_raw:
+        return page
+    return await _add_other_dates(page, profile, client, timeout, today)
+
+
+async def _add_other_dates(
+    page: ExtractedPage,
+    profile: SiteProfile,
+    client: Optional[httpx.AsyncClient],
+    timeout: float,
+    today: Optional[date],
+) -> ExtractedPage:
+    """Fetch the other departures the page links to, and keep their rows.
+
+    Prices really do move between dates, so each set is read where it is
+    published rather than copied. On a bisanseir page the same room is
+    71,000,000 by default and 67,000,000 on the date the site badges cheapest.
+
+    The two shapes are merged differently, because of what each list contains:
+
+    * a query list (``?date=``) names every date **including** the one already
+      on screen, so these rows replace the page's own;
+    * a sibling list names every date **except** this one, so these rows are
+      added to the page's own.
+
+    A date already gone is not fetched at all, which is free to know: the query
+    shape writes the date into the link. The sibling shape does not, so those
+    are fetched and judged afterwards, as they always were.
+    """
+    links = find_date_links(page.html_raw or "", page.url)
+    if not links:
+        return page
+
+    wanted = [link for link in links if _still_to_come(link.date, today)]
+    skipped = len(links) - len(wanted)
+    replaces = any(link.replaces_this_page for link in links)
+    if replaces:
+        page.rows, page.expired_rows = [], []
+
+    added = 0
+    for link in wanted:
+        if link.url == page.url:
+            continue
+        other = await extract_page(
+            link.url, profile, client=client, timeout=timeout, today=today,
+            follow_dates=False,
+        )
+        _stamp_date(other.rows + other.expired_rows, link.date)
+        page.rows.extend(other.rows)
+        page.expired_rows.extend(other.expired_rows)
+        added += len(other.rows)
+
+    page.notes.append(
+        f"{len(wanted)} of {len(links)} dates the page links to were fetched"
+        + (f", {skipped} already gone" if skipped else "")
+        + f"; {added} rows came back"
+    )
+    return page
+
+
+def _stamp_date(rows: list, jalali: Optional[str]) -> None:
+    """Give the rows of a per-date fetch the date that fetch asked for.
+
+    Without this the eight date sets of a bisanseir page come back as 576 rows
+    that all say nothing about when they leave — eight prices for one room with
+    no way to tell them apart, which is worse than the 72 dateless rows the
+    page gave before.
+
+    A row that already names its own departure is left alone, and so is a link
+    that did not say its date: the sibling shape carries only an id, and there
+    the page itself states the date once fetched.
+
+    Example:
+        >>> from crawler.extraction.models import ExtractedRow
+        >>> rows = [ExtractedRow()]
+        >>> _stamp_date(rows, "1405-06-11")
+        >>> rows[0].fields["departure_date"].value
+        {'iso': '2026-09-02', 'raw': '1405-06-11', 'time': None}
+    """
+    if not jalali:
+        return
+    try:
+        year, month, day = (int(part) for part in jalali.split("-"))
+        iso = date(*jalali_to_gregorian(year, month, day)).isoformat()
+    except (ValueError, TypeError):
+        return
+    value = {"iso": iso, "raw": jalali, "time": None}
+    for row in rows:
+        if "departure_date" in row.fields:
+            continue
+        row.fields["departure_date"] = ExtractedField(
+            value, METHOD_HEURISTIC_HTML, _DATE_LINK_SCOPE
+        )
+        row.attempts.pop("departure_date", None)
+        row.unresolved_fields = unresolved(row.fields, ROW_FIELDS)
+
+
+def _still_to_come(jalali: Optional[str], today: Optional[date]) -> bool:
+    """Whether a date written into a link has not already passed.
+
+    A link that does not say its date is always fetched: silence is not
+    evidence of expiry, the same rule
+    :func:`crawler.extraction.availability.is_bookable` follows.
+
+    Example:
+        >>> _still_to_come(None, date(2026, 8, 25))
+        True
+        >>> _still_to_come("1405-06-25", date(2026, 8, 25))
+        True
+        >>> _still_to_come("1405-04-25", date(2026, 8, 25))
+        False
+    """
+    if not jalali:
+        return True
+    try:
+        year, month, day = (int(part) for part in jalali.split("-"))
+        gy, gm, gd = jalali_to_gregorian(year, month, day)
+        return date(gy, gm, gd) >= (today or date.today())
+    except (ValueError, TypeError):
+        return True
+
+
+async def _extract_one(
+    url: str,
+    profile: SiteProfile,
+    client: Optional[httpx.AsyncClient],
+    timeout: float,
+    today: Optional[date],
+) -> ExtractedPage:
+    """One URL, fetched and read, with no other date followed."""
     fetched = await fetch_page(url, profile, client=client, timeout=timeout)
     if not fetched.html_raw:
         return fetched
