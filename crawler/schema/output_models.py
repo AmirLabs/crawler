@@ -287,6 +287,16 @@ class TourOffer:
         return self.prices.get(ROOM_CHILD_WITH_BED)
 
     @property
+    def triple_price(self) -> Optional[Price]:
+        """Three sharing a room, which the sites price and nothing carried.
+
+        ``سه تخته`` has been read into ``prices`` since room types were first
+        detected, and had no column to land in — the same fault
+        :attr:`child_no_bed_price` was given one for.
+        """
+        return self.prices.get(ROOM_TRIPLE)
+
+    @property
     def child_no_bed_price(self) -> Optional[Price]:
         """A child sharing a bed, priced separately by every site that sells it."""
         return self.prices.get(ROOM_CHILD_NO_BED)
@@ -432,6 +442,7 @@ class Tour:
             row.update(_price_columns("infant", offer.infant_price))
             # Single occupancy is a genuinely different price, not a duplicate.
             row.update(_price_columns("single", offer.prices.get(ROOM_SINGLE)))
+            row.update(_price_columns("triple", offer.triple_price))
             rows.append(row)
         return rows
 
