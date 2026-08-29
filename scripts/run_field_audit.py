@@ -339,11 +339,18 @@ async def audit_site(domain: str, pages: int, repeat_seen: bool) -> dict:
         await asyncio.sleep(1.0)
 
     # One LLM call for all the titles rather than one per page: the instructions
-    # cost far more than a title does.
+    # cost far more than a title does. Most pages never get here — the title
+    # rule already answered them during extraction — so the two counts are
+    # reported apart. Reporting only the model's share said "0 of 5" on a site
+    # whose score.txt showed 100%, which read as a fault and was not one.
     if extracted:
         print("  reading destinations from the titles ...", flush=True)
-        filled = fill_page_places(extracted)
-        result["notes"].append(f"destinations read for {filled} of {len(extracted)} pages")
+        by_rule = sum(1 for page in extracted if "destinations" in page.page_fields)
+        by_model = fill_page_places(extracted)
+        result["notes"].append(
+            f"destinations: {by_rule} of {len(extracted)} pages from the title rule,"
+            f" {by_model} more from the model"
+        )
 
     result["pages"] = [audit_page(page) for page in extracted]
     return result
