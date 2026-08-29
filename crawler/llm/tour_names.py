@@ -17,7 +17,6 @@ plausible invention out of the output, and it costs nothing to apply.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Optional
 
 from crawler.config import LLM_MODEL
@@ -27,6 +26,7 @@ from crawler.extraction.models import (
     ExtractedPage,
     record_attempt,
 )
+from crawler.extraction.readers.places import TourPlaces
 from crawler.extraction.target_fields import PAGE_FIELDS, unresolved
 from crawler.llm.cache import AnswerCache
 from crawler.llm.client import ask, is_available
@@ -56,36 +56,6 @@ def _comparable(text: str) -> str:
         True
     """
     return "".join(character for character in text if character not in _IGNORED)
-
-
-@dataclass
-class TourPlaces:
-    """Where one tour goes, and where it starts.
-
-    ``destinations`` keeps the order the title wrote them in, because a
-    multi-city tour reads as a route: "بالی + سنگاپور" is not the same
-    advertisement as "سنگاپور + بالی".
-
-    Example:
-        >>> places = TourPlaces(destinations=["بالی", "سنگاپور"], origin="تهران")
-        >>> places.display
-        'بالی + سنگاپور'
-    """
-
-    destinations: list[str] = field(default_factory=list)
-    origin: Optional[str] = None
-
-    @property
-    def display(self) -> Optional[str]:
-        """The destinations as one string, for showing rather than searching.
-
-        Example:
-            >>> TourPlaces(destinations=["کیش"]).display
-            'کیش'
-            >>> TourPlaces().display is None
-            True
-        """
-        return " + ".join(self.destinations) if self.destinations else None
 
 
 def _verified(title: str, destinations: list[str], origin: Optional[str]) -> TourPlaces:
@@ -197,6 +167,12 @@ def fill_page_places(
     nothing, the attempt is recorded, so a later reader can tell a place that
     was looked for and absent from one nothing has ever looked for.
 
+    A page whose destinations were already read from its own title is skipped
+    before the question is even built. :func:`crawler.extraction.readers.places
+    .read_title_places` answers 22 of the 23 real titles for nothing, so asking
+    about them again would pay for answers we hold and risk replacing a read
+    fact with a guess. What reaches the model is the residue.
+
     Returns how many pages gained a destination, so a caller can report it.
 
     Example:
@@ -211,6 +187,8 @@ def fill_page_places(
     """
     titles: list[str] = []
     for page in pages:
+        if page.page_fields.get("destinations") is not None:
+            continue  # the title already gave it up, for free
         field = page.page_fields.get("tour_name")
         if field is not None and isinstance(field.value, str):
             titles.append(field.value)
