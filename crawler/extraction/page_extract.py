@@ -66,6 +66,7 @@ from crawler.extraction.page_facts import apply_page_facts, read_page_facts
 from crawler.extraction.row_mapping import map_blocks
 from crawler.extraction.tour_api import api_url_for, enrich_from_api, fetch_tour_json
 from crawler.extraction.readers.dates import jalali_to_gregorian
+from crawler.extraction.readers.places import read_title_places
 from crawler.extraction.readers.transport import detect_transport, main_text
 from crawler.extraction.target_fields import PAGE_FIELDS, ROW_FIELDS, unresolved
 from crawler.profiler.models import SiteProfile
@@ -75,11 +76,13 @@ from crawler.profiler.models import SiteProfile
 _LOGO_PATH_ENDINGS = (".logo.url", ".logo.contentUrl", ".publisher.logo.url")
 
 # Which page-level fields this module actually looks for, and where it looks.
-# ``origin``, ``destination`` and ``is_installment_available`` are missing on
-# purpose: no rule reads them yet, and saying so is more useful than implying
-# they were searched for and absent.
+# ``origin`` and ``is_installment_available`` are missing on purpose: no rule
+# reads them yet, and saying so is more useful than implying they were searched
+# for and absent.
 _PAGE_ATTEMPTS: dict[str, str] = {
     "tour_name": f"{METHOD_HEURISTIC_HTML}:h1/og:title",
+    "destination": f"{METHOD_HEURISTIC_HTML}:tour_name",
+    "destinations": f"{METHOD_HEURISTIC_HTML}:tour_name",
     "image_url": f"{METHOD_HEURISTIC_HTML}:og:image",
     "agency_name": f"{METHOD_HEURISTIC_HTML}:og:site_name",
     "website_url": f"{METHOD_EXACT_KEY}:page_host",
@@ -171,6 +174,8 @@ def read_page_fields(
         ('تور کوالالامپور', 'نهال گشت')
         >>> fields["image_url"].value
         'https://nahalgasht.com/img/tour.jpg'
+        >>> fields["destinations"].value, fields["destination"].value
+        (['کوالالامپور'], 'کوالالامپور')
         >>> fields["transportation_type"].value, fields["transportation_type"].source_key
         ('air', 'transport:journey')
     """
@@ -184,6 +189,16 @@ def read_page_fields(
         fields[name] = ExtractedField(value=value, method=method, source_key=source)
 
     record("tour_name", _read_tour_name(tree), METHOD_HEURISTIC_HTML, "h1/og:title")
+
+    # Every title measured on the ten sites names where the tour goes, and
+    # subtracting the four noise vocabularies reads 22 of the 23 real titles —
+    # so this is answered here, for free, rather than sent to a model. The
+    # model pass in :mod:`crawler.llm.tour_names` now only sees what is left.
+    title = fields["tour_name"].value if "tour_name" in fields else None
+    places = read_title_places(title) if isinstance(title, str) else None
+    if places is not None and places.destinations:
+        record("destinations", places.destinations, METHOD_HEURISTIC_HTML, "tour_name")
+        record("destination", places.display, METHOD_HEURISTIC_HTML, "tour_name")
 
     image = _meta_content(tree, "og:image", "twitter:image")
     record("image_url", urljoin(base, image) if image else None, METHOD_HEURISTIC_HTML, "og:image")
