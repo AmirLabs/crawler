@@ -1,38 +1,33 @@
-"""Crawl a few unseen pages per site and write down every field we got and every one we missed.
+"""Crawl a few tour pages per site and write down every field we got and every one we missed.
 
-``run_audit.py`` answers "how much did we extract". This answers a different
-question, the one that decides whether the LLM step is needed at all: **which
+The question this answers is the one that decides what to fix next: **which
 exact field, on which exact page, came out empty** — with the page URL beside
 it, so Amir can open that page and say whether the site stated the value or
 never had it. Only he can make that call; this script's job is to make the
 check fast.
 
-Three things it does that the older audit does not:
+Three files per site, and no more, under ``logs/<site>/``:
 
-* **It picks pages we have not looked at before.** Every URL already recorded
-  in ``logs/*/rows.jsonl`` or ``logs/*/pages.jsonl`` is skipped, so a second run
-  reports on new pages instead of confirming the same ones. Judging the rules on
-  the pages they were written against is how a rule looks better than it is.
-* **It says why a field is empty**, not just that it is. Extraction records
-  every method it tried and that came back empty (``record_attempt``), so
-  "nothing looked for this" and "looked and found nothing" stay apart. The first
-  is a gap in the rules; the second may simply be a page that does not say.
-* **It indexes the misses by field**, so the question becomes "here are the 5
-  pages where the departure date is empty — are they empty on the site too?"
+    report.txt    every page audited and every value it produced
+    missing.txt   by field: the pages where it came out empty, and why
+    score.txt     how much of each field we managed to read, and the sum
 
-Output, per site, under ``logs/<site>/``:
-
-    fields.txt   page by page: the URL, what was filled, what was missing
-    missing.txt  by field: every page URL where that field came out empty
-    pages.jsonl  the same thing as JSON, and the record of what has been seen
-
-and one combined ``logs/missing_all.txt`` putting the sites side by side.
+The field list is not written here. It is read from
+:meth:`crawler.schema.output_models.Tour.to_rows`, so a column added to the
+client's output appears in the report the same day. An earlier version listed
+its fields by hand and showed thirteen of forty-five; the child and infant
+prices were empty on every site and it never showed, because the report never
+asked about them.
 
 Run::
 
     .venv/bin/python scripts/run_field_audit.py
-    .venv/bin/python scripts/run_field_audit.py --domain tahagasht --pages 5
-    .venv/bin/python scripts/run_field_audit.py --repeat-seen     # re-use old pages
+    .venv/bin/python scripts/run_field_audit.py --domain bisanseir
+    .venv/bin/python scripts/run_field_audit.py --domain bisanseir --pages 3
+    .venv/bin/python scripts/run_field_audit.py --repeat-seen
+
+Progress is printed as it goes — one line per page, with the row count and the
+time it took — so a long run can be told from a hung one.
 """
 
 from __future__ import annotations
@@ -40,8 +35,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import sys
-from collections import Counter, defaultdict
+import time
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -59,6 +56,7 @@ from crawler.filtering.url_filter import discover_tour_urls
 from crawler.llm.tour_names import fill_page_places
 from crawler.profiler.profiler import profile_site
 from crawler.schema.converter import build_tour
+from crawler.schema.output_models import Hotel, Tour, TourDate, TourOffer
 from crawler.utils.domains import load_domains
 
 LOGS = PROJECT_ROOT / "logs"
@@ -68,39 +66,106 @@ LOGS = PROJECT_ROOT / "logs"
 # somebody does.
 DEFAULT_PAGES = 5
 
-# The client's own output fields, grouped the way the eye reads them. Grouping
-# matters here: "the whole date group is empty" and "one of eight fields is
-# empty" are different problems, and a flat list hides which one this is.
-FIELD_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("what tour", ("tour_name", "origin", "destination", "transportation_type")),
-    ("when", ("departure_date", "return_date", "number_of_nights")),
-    ("where you sleep", ("hotels", "hotel_star_rating", "board_type")),
-    ("what it costs", ("adult_price", "adult_price_currency", "single_price")),
-)
-REVIEW_FIELDS: tuple[str, ...] = tuple(f for _, fields in FIELD_GROUPS for f in fields)
+# How many rows of a page are written out in full. One bisanseir page over its
+# 22 departures produced 863 rows and a 1.4 MB file, and a file nobody scrolls
+# to the end of is not a check. Every field of every row shown is complete;
+# what is cut is repetition, and the count of what was cut is printed.
+ROWS_SHOWN = 25
 
-# An output column and the extraction field behind it, where the two are named
-# differently. Needed to look up why a value is missing: the reason is recorded
-# under the extraction name, and the report is written in the client's names.
+# httpx logs a line per request at INFO, and this script makes hundreds. Left
+# on, its own progress lines are lost in the middle of them — which defeats the
+# point of printing progress at all.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+def output_fields() -> tuple[str, ...]:
+    """Every column the client receives, asked of the model rather than listed.
+
+    Building one empty row is what makes the report impossible to leave
+    incomplete: a column added to ``to_rows`` shows up here with no edit.
+
+    Example:
+        >>> fields = output_fields()
+        >>> "departure_date_jalali" in fields, "logo_url" in fields
+        (True, True)
+    """
+    tour = Tour(tour_url="u", tour_name="t")
+    tour.offers = [TourOffer(hotel=Hotel(name="h"), departure=TourDate(), ret=TourDate())]
+    return tuple(tour.to_rows()[0])
+
+
+ALL_FIELDS: tuple[str, ...] = output_fields()
+
+# The same fields grouped the way the eye reads them. Grouping matters: "the
+# whole date group is empty" and "one of eight is empty" are different
+# problems, and a flat list of sixty hides which one this is.
+#
+# Nothing is lost by being left out. Whatever these groups do not name is
+# collected into "anything else" by :func:`field_groups`, so the report stays
+# complete even when this list falls behind the model.
+# What every price column is spelled with, once per traveller type.
+_PRICE_SUFFIXES = ("", "_currency", "_foreign", "_foreign_currency",
+                   "_basis", "_includes_flight")
+
+_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("what tour", ("tour_name", "origin", "destination", "destinations",
+                   "transportation_type", "is_installment_available")),
+    ("who sells it", ("agency_name", "website_url", "tour_url", "image_url", "logo_url")),
+    ("when", ("departure_date", "return_date", "departure_date_jalali",
+              "return_date_jalali", "departure_time", "return_time",
+              "number_of_nights")),
+    ("where you sleep", ("hotels", "hotel_star_rating", "hotel_city", "board_type")),
+    ("how you travel", ("transport_name", "transport_duration")),
+    ("price: two people sharing", tuple(f"adult_price{s}" for s in _PRICE_SUFFIXES)),
+    ("price: single room", tuple(f"single_price{s}" for s in _PRICE_SUFFIXES)),
+    ("price: three sharing", tuple(f"triple_price{s}" for s in _PRICE_SUFFIXES)),
+    ("price: child with a bed", tuple(f"child_price{s}" for s in _PRICE_SUFFIXES)),
+    ("price: child without a bed", tuple(f"child_no_bed_price{s}" for s in _PRICE_SUFFIXES)),
+    ("price: infant", tuple(f"infant_price{s}" for s in _PRICE_SUFFIXES)),
+)
+
+
+def field_groups() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """The groups, plus every field the groups forgot.
+
+    Example:
+        >>> named = {f for _, fields in field_groups() for f in fields}
+        >>> named == set(ALL_FIELDS)
+        True
+    """
+    named = {f for _, fields in _GROUPS if fields for f in fields}
+    rest = tuple(f for f in ALL_FIELDS if f not in named)
+    groups = tuple((title, tuple(f for f in fields if f in ALL_FIELDS))
+                   for title, fields in _GROUPS if fields)
+    return groups + ((("anything else", rest),) if rest else ())
+
+
+# What a missing field means, in the two cases the pipeline can tell apart.
+_NEVER_LOOKED = "nothing looked for it"
+_TRIED_AND_FAILED = "looked, found nothing"
+_NO_ROWS = "the page produced no rows at all"
+
+# Output names that are read under a different name inside extraction, so
+# "why is it missing" can find the attempts that were recorded against it.
 _EXTRACTION_NAME: dict[str, str] = {
     "number_of_nights": "nights",
     "hotels": "hotel_name",
-    "adult_price": "price",
-    "adult_price_currency": "price",
-    "single_price": "price",
+    "departure_date_jalali": "departure_date",
+    "return_date_jalali": "return_date",
+    "departure_time": "departure_date",
+    "return_time": "return_date",
+    **{
+        f"{prefix}_price{suffix}": "price"
+        for prefix in ("adult", "single", "triple", "child", "child_no_bed", "infant")
+        for suffix in ("", "_currency", "_foreign", "_foreign_currency",
+                       "_basis", "_includes_flight")
+    },
 }
-
-# What a missing field means, in the two cases the pipeline can tell apart.
-_TRIED_AND_FAILED = "looked, found nothing"
-_NEVER_LOOKED = "nothing looked for it"
-# A page that produced no rows at all fails every field for one single reason,
-# and saying "nothing looked for it" thirteen times hides that. The page is the
-# problem, not the fields.
-_NO_ROWS = "no rows were read from this page — see the note below"
 
 
 def _short(name: str) -> str:
-    """Site name without scheme or www, for filenames and table rows.
+    """Site name without scheme or www, for folder names and table rows.
 
     Example:
         >>> _short("https://www.alefbatour.com")
@@ -112,29 +177,22 @@ def _short(name: str) -> str:
 def seen_urls(site: str) -> set[str]:
     """Every page URL this site has already been audited on.
 
-    Read from the logs rather than kept in a state file, so deleting the log is
-    all it takes to start over, and so the record cannot drift from the report
-    it came from.
+    Read back out of the site's own report rather than kept in a state file, so
+    deleting the folder is all it takes to start over and the record can never
+    drift from the report it came from.
 
     Example:
         >>> isinstance(seen_urls("no-such-site"), set)
         True
     """
-    found: set[str] = set()
-    folder = LOGS / site
-    for name in ("rows.jsonl", "pages.jsonl"):
-        path = folder / name
-        if not path.exists():
-            continue
-        for line in path.read_text(encoding="utf-8").splitlines():
-            try:
-                record = json.loads(line)
-            except ValueError:
-                continue
-            url = record.get("tour_url") or record.get("url")
-            if url:
-                found.add(url)
-    return found
+    path = LOGS / site / "report.txt"
+    if not path.exists():
+        return set()
+    return {
+        line.split("PAGE", 1)[1].strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip().startswith("PAGE")
+    }
 
 
 def _why_missing(page: ExtractedPage, field: str) -> str:
@@ -142,8 +200,7 @@ def _why_missing(page: ExtractedPage, field: str) -> str:
 
     The distinction is the whole point of ``attempts``: a field nothing looked
     for is a gap in the rules, while a field several methods tried and failed on
-    may be a page that simply does not state it. Only the second kind is worth
-    sending to the LLM.
+    may be a page that simply does not state it.
 
     Example:
         >>> page = ExtractedPage(url="u")
@@ -165,24 +222,27 @@ def _why_missing(page: ExtractedPage, field: str) -> str:
 
 
 def audit_page(page: ExtractedPage) -> dict:
-    """One page's report: the URL, the fields filled, and the ones missing.
+    """One page's report: its URL, its rows, and why each empty field is empty.
 
-    A field counts as filled when *any* row on the page carries it. A page
-    selling one date across nine hotels fills the date once, and calling that a
-    miss on eight rows would drown the real gaps.
+    A field counts as filled for the page when *any* row carries it. A page
+    selling one date across nine hotels states the date once, and calling that
+    a miss on eight rows would drown the real gaps — so the rows are counted
+    separately, in ``rows_with``.
 
     Example:
         >>> report = audit_page(ExtractedPage(url="https://x/tour/1"))
         >>> report["url"], report["rows"], report["filled"]
         ('https://x/tour/1', 0, [])
     """
-    tour = build_tour(page)
-    rows = tour.to_rows()
+    rows = build_tour(page).to_rows()
 
     filled: list[str] = []
     missing: list[tuple[str, str]] = []
-    for field in REVIEW_FIELDS:
-        if any(row.get(field) not in (None, "", []) for row in rows):
+    rows_with: dict[str, int] = {}
+    for field in ALL_FIELDS:
+        carried = [r for r in rows if r.get(field) not in (None, "", [])]
+        rows_with[field] = len(carried)
+        if carried:
             filled.append(field)
         elif not rows:
             missing.append((field, _NO_ROWS))
@@ -191,33 +251,33 @@ def audit_page(page: ExtractedPage) -> dict:
 
     return {
         "url": page.url,
-        "tour_url": page.url,
         "rows": len(rows),
         "expired_rows": len(page.expired_rows),
         "filled": filled,
+        "rows_with": rows_with,
         "missing": [{"field": f, "why": w} for f, w in missing],
         "notes": list(page.notes),
+        "data": rows,
     }
 
 
 async def audit_site(domain: str, pages: int, repeat_seen: bool) -> dict:
-    """Crawl up to ``pages`` unseen tour pages of one site and report each one."""
+    """Crawl up to ``pages`` tour pages of one site and report each one."""
     site = _short(domain)
     result: dict = {
-        "domain": domain,
-        "name": site,
-        "status": "ok",
-        "pages": [],
-        "notes": [],
-        "skipped_seen": 0,
+        "domain": domain, "name": site, "status": "ok",
+        "pages": [], "notes": [], "skipped_seen": 0,
     }
 
+    print(f"  profiling {domain} ...", flush=True)
     profile = await profile_site(domain, render=False)
     if not profile.reachable:
         result["status"] = "UNREACHABLE"
         result["notes"].append(f"site did not answer: {profile.error}")
+        print(f"  UNREACHABLE: {profile.error}", flush=True)
         return result
 
+    print("  finding tour URLs ...", flush=True)
     discovery = await discover_tour_urls(profile)
     if not discovery.tour_urls:
         result["status"] = "NO URLS"
@@ -225,10 +285,12 @@ async def audit_site(domain: str, pages: int, repeat_seen: bool) -> dict:
             f"site answered but no tour URLs were found "
             f"(source={discovery.source}, seen={discovery.total_seen})"
         )
+        print("  no tour URLs found", flush=True)
         return result
 
     groups = group_by_tour(discovery.tour_urls)
     already = set() if repeat_seen else seen_urls(site)
+    print(f"  {len(discovery.tour_urls)} URLs -> {len(groups)} tours", flush=True)
 
     # Spread the picks across the whole list rather than taking the first few,
     # which on these sites are all one destination — and skip what a previous
@@ -241,8 +303,7 @@ async def audit_site(domain: str, pages: int, repeat_seen: bool) -> dict:
 
     # Unseen pages first. If a site has run out of them, fall back to ones
     # already audited rather than reporting nothing: an empty report reads like
-    # a broken site, and a site with too few pages is a fact worth stating, not
-    # a reason to skip the site.
+    # a broken site, and a site with too few pages is a fact worth stating.
     picks = fresh[:pages]
     if len(picks) < pages:
         topped_up = [u for u in ordered if u not in picks][: pages - len(picks)]
@@ -258,23 +319,29 @@ async def audit_site(domain: str, pages: int, repeat_seen: bool) -> dict:
         result["notes"].append(f"no tour URLs to audit ({len(candidates)} candidates)")
         return result
 
-    # extract_page, not extract_page_from_html: the second one reads the markup
-    # and nothing else, so a site whose offers come from its own API or from a
-    # rendered page reports zero rows and looks broken. Measured on one
-    # avisatravel page: 0 rows through the markup, 55 through this.
+    # extract_page, not extract_page_from_html: the second reads the markup and
+    # nothing else, so a site whose offers come from its own API or from a page
+    # that offers several dates reports zero rows and looks broken.
     extracted: list[ExtractedPage] = []
-    for url in picks:
+    for number, url in enumerate(picks, start=1):
+        started = time.monotonic()
+        print(f"  [{number}/{len(picks)}] {url[:88]}", flush=True)
         try:
             page = await extract_page(url, profile, timeout=40)
         except Exception as error:  # a dead page must not end the run
             result["notes"].append(f"{url} -> {error}")
+            print(f"        FAILED after {time.monotonic() - started:.0f}s: {error}",
+                  flush=True)
             continue
         extracted.append(page)
+        print(f"        {len(page.rows)} rows, {len(page.expired_rows)} expired,"
+              f" {time.monotonic() - started:.0f}s", flush=True)
         await asyncio.sleep(1.0)
 
     # One LLM call for all the titles rather than one per page: the instructions
     # cost far more than a title does.
     if extracted:
+        print("  reading destinations from the titles ...", flush=True)
         filled = fill_page_places(extracted)
         result["notes"].append(f"destinations read for {filled} of {len(extracted)} pages")
 
@@ -282,99 +349,151 @@ async def audit_site(domain: str, pages: int, repeat_seen: bool) -> dict:
     return result
 
 
-def write_site_report(result: dict) -> Path:
-    """Write one site's page-by-page report, its missing-field index, and its JSON."""
-    folder = LOGS / result["name"]
-    folder.mkdir(parents=True, exist_ok=True)
-    pages = result["pages"]
-    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+def _stamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
+
+def write_report(result: dict, folder: Path) -> None:
+    """Every page audited and every value it gave, under its URL."""
+    pages = result["pages"]
     lines = [
-        f"{result['domain']}",
-        f"{len(pages)} pages, audited {stamp}",
-        f"status {result['status']}   skipped as already audited: {result['skipped_seen']}",
+        f"{result['domain']} — what we extracted",
+        f"{len(pages)} pages, audited {_stamp()}",
         "",
-        "Open each PAGE and check the MISSING list against it. A field this",
-        "found is not necessarily right — it is only present.",
+        "Every row we would send the client, with the page it came from. Empty",
+        "fields are left out here and listed in missing.txt instead, and a page",
+        f"showing more than {ROWS_SHOWN} rows is cut with its full count kept.",
         "=" * 86,
     ]
+    for note in result["notes"]:
+        lines.append(f"note  {note}")
+    if not pages:
+        lines += ["", f"no page was audited: {result['status']}"]
     for number, page in enumerate(pages, start=1):
-        lines.append("")
-        lines.append(f"--- page {number} of {len(pages)} ---")
-        lines.append(f"  PAGE     {page['url']}")
-        lines.append(f"  rows     {page['rows']}"
-                     + (f"   ({page['expired_rows']} already departed)" if page["expired_rows"] else ""))
-        for title, fields in FIELD_GROUPS:
-            got = [f for f in fields if f in page["filled"]]
-            lines.append(f"  {title:16} {len(got)}/{len(fields)}   {', '.join(got) or '-'}")
-        if page["missing"]:
-            lines.append("  MISSING")
-            for item in page["missing"]:
-                lines.append(f"      {item['field']:28} {item['why']}")
-        for note in page["notes"][:4]:
-            lines.append(f"  note     {note[:140]}")
-    (folder / "fields.txt").write_text("\n".join(lines), encoding="utf-8")
+        lines += ["", "=" * 86,
+                  f"page {number} of {len(pages)}   {page['rows']} rows,"
+                  f" {page['expired_rows']} already departed",
+                  f"  PAGE {page['url']}"]
+        for note in page["notes"]:
+            lines.append(f"  note  {note}")
+        if not page["data"]:
+            lines.append("  (no rows)")
+        for index, row in enumerate(page["data"][:ROWS_SHOWN], start=1):
+            lines.append(f"  --- row {index} of {len(page['data'])} ---")
+            for title, fields in field_groups():
+                carried = [(f, row[f]) for f in fields if row.get(f) not in (None, "", [])]
+                if not carried:
+                    continue
+                lines.append(f"      [{title}]")
+                for name, value in carried:
+                    lines.append(f"        {name:36} {value}")
+        if len(page["data"]) > ROWS_SHOWN:
+            lines.append(f"  ... and {len(page['data']) - ROWS_SHOWN} more rows on this"
+                         f" page, the same shape as the ones above")
+    (folder / "report.txt").write_text("\n".join(lines), encoding="utf-8")
 
+
+def write_missing(result: dict, folder: Path) -> None:
+    """By field: the pages where it came out empty, and what was tried."""
+    pages = result["pages"]
     by_field: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for page in pages:
         for item in page["missing"]:
             by_field[item["field"]].append((page["url"], item["why"]))
 
     lines = [
-        f"{result['domain']} — what we did not get, and where to check it",
-        f"{len(pages)} pages, audited {stamp}",
+        f"{result['domain']} — what we could not read",
+        f"{len(pages)} pages, audited {_stamp()}",
         "",
-        "'looked, found nothing' means the rules ran and the page gave nothing —",
-        "either the page does not say it, or our rule is wrong. Amir decides which.",
-        "'nothing looked for it' means no rule even tried, which is ours to fix.",
+        "Open a page and check the field against it. An empty field is not",
+        "always a fault: a site that never states the hotel city has nothing",
+        "for us to read. The two reasons are kept apart —",
+        f"  '{_NEVER_LOOKED}'   no rule even tried: a gap in our rules",
+        f"  '{_TRIED_AND_FAILED}'  rules ran and came back empty: maybe the page",
         "=" * 86,
     ]
-    for field in REVIEW_FIELDS:
-        hits = by_field.get(field, [])
-        lines.append("")
-        lines.append(f"{field}   missing on {len(hits)} of {len(pages)} pages")
-        for url, why in hits:
-            lines.append(f"    {url}")
-            lines.append(f"        {why}")
+    # No pages is not "every field read". A site that did not answer has to say
+    # so here, or its report reads like a clean sweep.
+    if not pages:
+        lines += ["", f"no page was audited: {result['status']}"]
+        for note in result["notes"]:
+            lines.append(f"  {note}")
+        (folder / "missing.txt").write_text("\n".join(lines), encoding="utf-8")
+        return
+
+    for title, fields in field_groups():
+        gaps = [(f, by_field[f]) for f in fields if by_field.get(f)]
+        lines += ["", f"[{title}]"]
+        if not gaps:
+            lines.append("   every field read on every page")
+            continue
+        for name, where in gaps:
+            lines.append(f"   {name}   empty on {len(where)} of {len(pages)} pages")
+            for url, why in where:
+                lines.append(f"       {why}")
+                lines.append(f"       {url}")
     (folder / "missing.txt").write_text("\n".join(lines), encoding="utf-8")
 
-    with (folder / "pages.jsonl").open("a", encoding="utf-8") as handle:
-        for page in pages:
-            handle.write(json.dumps({**page, "audited_at": stamp}, ensure_ascii=False) + "\n")
 
-    return folder
-
-
-def write_combined(results: list[dict]) -> None:
-    """One table of how often each field was missing, per site."""
-    LOGS.mkdir(exist_ok=True)
-    names = [r["name"][:11] for r in results]
-    totals = [len(r["pages"]) for r in results]
-    misses = [
-        Counter(item["field"] for page in r["pages"] for item in page["missing"])
-        for r in results
-    ]
+def write_score(result: dict, folder: Path) -> None:
+    """How much of each field we managed to read, and how that is counted."""
+    pages = result["pages"]
+    total_pages = len(pages)
+    total_rows = sum(p["rows"] for p in pages)
 
     lines = [
-        "How often each field was MISSING, per site (% of pages). Lower is better.",
-        "The per-page URLs are in logs/<site>/missing.txt.",
+        f"{result['domain']} — how much we read",
+        f"{total_pages} pages, {total_rows} rows, audited {_stamp()}",
         "",
-        f"{'field':28}" + "".join(f"{n:>12}" for n in names),
-        "-" * (28 + 12 * len(names)),
+        "Two numbers per field, because they answer different questions:",
+        "",
+        "  pages  the share of pages where at least one row carried the field.",
+        "         A page states its departure once for nine hotels, so this is",
+        "         the honest measure of 'did we read it from this page at all'.",
+        "  rows   the share of all rows that carry it. Lower is not always",
+        "         worse: a single-room price exists only where the site sells",
+        "         one, and a row without it is not a miss.",
+        "",
+        "A low score is a question, not a verdict. Check missing.txt for the",
+        "pages behind it before deciding the rules are at fault.",
+        "=" * 86,
     ]
-    for field in REVIEW_FIELDS:
-        cells = [
-            f"{(count[field] / total * 100):>11.0f}%" if total else f"{'-':>12}"
-            for count, total in zip(misses, totals)
-        ]
-        lines.append(f"{field:28}" + "".join(cells))
-    lines.append("")
-    lines.append(f"{'status':28}" + "".join(f"{r['status']:>12}" for r in results))
-    lines.append(f"{'pages':28}" + "".join(f"{t:>12}" for t in totals))
-    lines.append(f"{'rows':28}" + "".join(
-        f"{sum(p['rows'] for p in r['pages']):>12}" for r in results
-    ))
-    (LOGS / "missing_all.txt").write_text("\n".join(lines), encoding="utf-8")
+    if not total_pages:
+        lines.append(f"\nnothing to score: {result['status']}")
+        for note in result["notes"]:
+            lines.append(f"  {note}")
+        (folder / "score.txt").write_text("\n".join(lines), encoding="utf-8")
+        return
+
+    overall: list[float] = []
+    for title, fields in field_groups():
+        lines += ["", f"[{title}]", f"   {'field':38}{'pages':>7}{'rows':>7}   "]
+        for name in fields:
+            on_pages = sum(1 for p in pages if name in p["filled"])
+            in_rows = sum(p["rows_with"].get(name, 0) for p in pages)
+            page_pct = on_pages * 100 / total_pages
+            row_pct = in_rows * 100 / total_rows if total_rows else 0
+            overall.append(page_pct)
+            bar = "#" * int(page_pct / 5)
+            lines.append(f"   {name:38}{page_pct:6.0f}%{row_pct:6.0f}%   {bar}")
+
+    lines += ["", "=" * 86,
+              f"average across all {len(ALL_FIELDS)} fields: "
+              f"{sum(overall) / len(overall):.0f}% of pages"]
+    (folder / "score.txt").write_text("\n".join(lines), encoding="utf-8")
+
+
+def write_site(result: dict) -> Path:
+    """The three files for one site, replacing whatever was there before."""
+    folder = LOGS / result["name"]
+    folder.mkdir(parents=True, exist_ok=True)
+    for old in folder.iterdir():
+        if old.is_file():
+            old.unlink()
+    write_report(result, folder)
+    write_missing(result, folder)
+    write_score(result, folder)
+    return folder
 
 
 async def main(domain: Optional[str], pages: int, repeat_seen: bool) -> None:
@@ -385,23 +504,18 @@ async def main(domain: Optional[str], pages: int, repeat_seen: bool) -> None:
             print(f"no domain matching {domain!r} in domains/targets.txt")
             return
 
-    results = []
-    for target in domains:
-        print(f"auditing {target} ...", flush=True)
+    started = time.monotonic()
+    print(f"auditing {len(domains)} site(s), up to {pages} pages each\n", flush=True)
+    for number, target in enumerate(domains, start=1):
+        print(f"[{number}/{len(domains)}] {target}", flush=True)
         result = await audit_site(target, pages, repeat_seen)
-        results.append(result)
-        folder = write_site_report(result)
+        folder = write_site(result)
+        rows = sum(p["rows"] for p in result["pages"])
         gaps = sum(len(p["missing"]) for p in result["pages"])
-        print(
-            f"  {len(result['pages'])} pages, "
-            f"{sum(p['rows'] for p in result['pages'])} rows, "
-            f"{gaps} missing fields -> {folder}",
-            flush=True,
-        )
+        print(f"  -> {len(result['pages'])} pages, {rows} rows, {gaps} empty fields"
+              f"  written to {folder}\n", flush=True)
 
-    if len(results) > 1:
-        write_combined(results)
-        print("\nwrote logs/missing_all.txt")
+    print(f"done in {time.monotonic() - started:.0f}s", flush=True)
 
 
 if __name__ == "__main__":
