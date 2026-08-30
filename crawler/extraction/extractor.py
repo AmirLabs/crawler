@@ -372,18 +372,46 @@ async def fetch_page(
             page.notes.append("this site was measured: rendering adds nothing")
             return page
 
-        rendered = await _fetch_playwright(url, timeout=timeout, browser=browser)
-        if rendered.html_raw:
-            rendered.notes = page.notes + [
-                "served markup still held template placeholders; rendered instead"
-            ] + rendered.notes
-            # Keep the plain markup alongside, so the caller can compare what
-            # each produced and settle the question for this site.
-            rendered.html_before_render = page.html_raw
-            return rendered
-        page.notes.append(f"needed rendering but it failed: {rendered.error}")
+        return await render_beside(
+            page,
+            "served markup still held template placeholders; rendered instead",
+            timeout=timeout,
+            browser=browser,
+        )
 
     return page
+
+
+async def render_beside(
+    page: ExtractedPage,
+    reason: str,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    browser: Optional[BrowserSession] = None,
+) -> ExtractedPage:
+    """Fetch ``page``'s URL again through a browser, keeping the plain markup.
+
+    The plain copy is carried on ``html_before_render`` rather than thrown
+    away, because whether the browser was worth its 6 to 13 seconds can only
+    be answered by counting the rows each version yields — which is
+    :func:`crawler.extraction.page_extract._settle_render_question`'s job.
+
+    A failed render leaves ``page`` as it was: a browser that will not start is
+    a reason to carry on with plain markup, not to lose the page.
+
+    Example:
+        >>> page = ExtractedPage(url="https://example.com/tour/1", html_raw="<body></body>")
+        >>> out = await render_beside(page, "nothing came out of the plain markup")
+        >>> out.html_before_render
+        '<body></body>'
+    """
+    rendered = await _fetch_playwright(page.url, timeout=timeout, browser=browser)
+    if not rendered.html_raw:
+        page.notes.append(f"needed rendering but it failed: {rendered.error}")
+        return page
+
+    rendered.notes = page.notes + [reason] + rendered.notes
+    rendered.html_before_render = page.html_raw
+    return rendered
 
 
 async def fetch_pages(
