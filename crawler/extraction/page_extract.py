@@ -41,7 +41,7 @@ import httpx
 from selectolax.parser import HTMLParser
 
 from crawler.config import DEFAULT_TIMEOUT_SECONDS
-from crawler.extraction.extractor import fetch_page
+from crawler.extraction.extractor import fetch_page, render_beside
 from crawler.extraction.structure.html_rows import (
     MIN_ROW_SCORE,
     find_row_containers,
@@ -64,7 +64,11 @@ from crawler.extraction.date_links import find_date_links
 _DATE_LINK_SCOPE = f"{METHOD_HEURISTIC_HTML}:date_link"
 from crawler.extraction.page_facts import apply_page_facts, read_page_facts
 from crawler.extraction.row_mapping import map_blocks
-from crawler.extraction.tour_api import api_url_for, enrich_from_api, fetch_tour_json
+from crawler.extraction.tour_api import (
+    api_url_for,
+    enrich_from_api,
+    fetch_tour_json,
+)
 from crawler.extraction.readers.dates import jalali_to_gregorian
 from crawler.extraction.readers.places import read_title_places
 from crawler.extraction.readers.transport import detect_transport, main_text
@@ -486,13 +490,48 @@ async def _extract_one(
     timeout: float,
     today: Optional[date],
 ) -> ExtractedPage:
-    """One URL, fetched and read, with no other date followed."""
+    """One URL, fetched and read, with no other date followed.
+
+    The markup is read first, then the site's own JSON is asked, and only if
+    both come back empty is a browser opened. That order is what the browser
+    costs: 6 to 13 seconds against one small GET.
+
+    Rendering last rather than first is what radingasht.com needed. It declares
+    an API, so the fetch layer stood down — but the API answers 404 for its own
+    tour ids, and the hotel list is drawn by JavaScript, so the page yielded
+    nothing at all. Deciding on the declaration is deciding on a promise;
+    deciding after it is deciding on what arrived.
+    """
     fetched = await fetch_page(url, profile, client=client, timeout=timeout)
     if not fetched.html_raw:
         return fetched
 
     fetched = _settle_render_question(fetched, profile, today)
+    page = await _read_everything(url, fetched, client, timeout, today)
 
+    if page.rows or not _worth_rendering(fetched, profile):
+        return page
+
+    rendered = await render_beside(
+        fetched,
+        "neither the markup nor the API gave a row; rendered to see if there are any",
+        timeout=timeout,
+    )
+    if rendered.html_before_render is None:
+        return page  # the browser would not start; keep what we have
+
+    rendered = _settle_render_question(rendered, profile, today)
+    return await _read_everything(url, rendered, client, timeout, today)
+
+
+async def _read_everything(
+    url: str,
+    fetched: ExtractedPage,
+    client: Optional[httpx.AsyncClient],
+    timeout: float,
+    today: Optional[date],
+) -> ExtractedPage:
+    """Read one copy of the markup, and let the site's own JSON overrule it."""
     page = extract_page_from_html(url, fetched.html_raw, fetched.embedded_json, today=today)
     # Carry over what the fetch layer learned, so provenance survives.
     page.fetch_method = fetched.fetch_method
@@ -504,7 +543,7 @@ async def _extract_one(
     # A site that publishes its own tour JSON knows its offers exactly, so its
     # answer replaces what the markup was read for. Everything the JSON does not
     # carry — the picture, the agency, the logo — stays as the document gave it.
-    api_url = api_url_for(url, fetched.html_raw)
+    api_url = api_url_for(url, fetched.html_raw or "")
     if api_url:
         data, error = await _tour_json(api_url, client, timeout)
         if data is not None:
@@ -514,6 +553,43 @@ async def _extract_one(
             page.notes.append(f"site publishes an API but it did not answer: {error}")
 
     return page
+
+
+def _worth_rendering(fetched: ExtractedPage, profile: SiteProfile) -> bool:
+    """Whether a browser is worth trying on a page that gave up nothing.
+
+    ``needs_rendering`` asks whether the markup *looks* client-side, by counting
+    ``{{ }}`` placeholders. That is the right question for a raw template and
+    the wrong one for a compiled framework: Next.js and Vue turn their
+    templates into code before serving, so nothing is left to count. Measured
+    on the served markup of a real tour page:
+
+        chakavaktravel   0 placeholders,   1,645 visible chars, 65,056 in script
+        radingasht       0 placeholders,   3,559 visible chars,  5,316 in script
+
+    Both come back with 0 rows plain and score 0.70 rendered. No property of
+    the markup separates them from a site that needs no browser — liyaseir.com
+    devotes a *smaller* share of its bytes to visible text than chakavaktravel
+    does and reads fine without one. So the trigger is the outcome rather than
+    the markup: nothing came out, so try the other way of looking.
+
+    Two cases are left alone. A page already rendered has nothing to retry, and
+    a site already measured as gaining nothing keeps that answer — which is
+    what stops this costing 6 to 13 seconds on every empty page rather than
+    once per site.
+
+    Example:
+        >>> profile = SiteProfile(domain="example.com")
+        >>> empty = ExtractedPage(url="https://example.com/t/1", html_raw="<body></body>")
+        >>> _worth_rendering(empty, profile)
+        True
+        >>> profile.rendering.render_helps = False
+        >>> _worth_rendering(empty, profile)
+        False
+    """
+    if fetched.html_before_render is not None:
+        return False  # the browser has already had its turn on this page
+    return profile.rendering.render_helps is not False
 
 
 def _settle_render_question(
