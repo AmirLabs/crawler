@@ -62,6 +62,32 @@ class AntiBotInfo:
 
 
 @dataclass
+class UrlShapeInfo:
+    """Which of this site's URL shapes actually lead to a tour.
+
+    No shape means the same thing on two sites: ``/tours/<slug>`` is a real
+    tour on vanrosh.com and a destination guide on tahagasht.com, and
+    alefbatour.com publishes both ``/tour/d/<num>/<slug>`` (515 tours) and
+    ``/tour/<slug>`` (81 guides — /tour/bodrum, /tour/marmaris). So this is
+    measured per site rather than decided in the rules, the same way
+    :attr:`RenderingInfo.render_helps` is.
+
+    A site can mean more than one shape at once: vanrosh.com sells tours under
+    ``/tours/<slug>`` and ``/tours/<num>`` alike, 93 and 57 URLs, both real.
+    Hence lists rather than one winning shape.
+
+    ``tested`` stays False when nothing could be sampled — an unreachable site,
+    or a fetch that failed — and the caller then keeps every URL it found. A
+    site that answers slowly should lose speed, not its whole tour list.
+    """
+
+    tour_shapes: list[str] = field(default_factory=list)
+    guide_shapes: list[str] = field(default_factory=list)
+    tested: bool = False
+    notes: list[str] = field(default_factory=list)
+
+
+@dataclass
 class TechInfo:
     cms: Optional[str] = None        # "WordPress", "Jomla", ...
     has_json_api: bool = False       # e.g. /wp-json responds with JSON
@@ -80,6 +106,7 @@ class SiteProfile:
     rendering: RenderingInfo = field(default_factory=RenderingInfo)
     anti_bot: AntiBotInfo = field(default_factory=AntiBotInfo)
     tech: TechInfo = field(default_factory=TechInfo)
+    url_shapes: UrlShapeInfo = field(default_factory=UrlShapeInfo)
 
     recommended_strategy: str = "unknown"  # "sitemap" | "static-crawl" | "dynamic-crawl" | "blocked"
 
