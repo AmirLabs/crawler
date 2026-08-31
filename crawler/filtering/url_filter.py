@@ -99,7 +99,7 @@ def _is_identifier(seg: str) -> bool:
     return digits >= 3 and digits >= letters
 
 
-def _group_by_shape(urls: list[str]) -> dict[str, list[str]]:
+def group_by_shape(urls: list[str]) -> dict[str, list[str]]:
     """Group URLs by path shape, learning which segments vary from the set.
 
     A segment is treated as variable when many different values appear in that
@@ -477,6 +477,29 @@ async def discover_tour_urls(
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     crawl_budget: int = CRAWL_BUDGET_PAGES,
 ) -> UrlDiscovery:
+    """Find tour URLs from a profiled site, keeping only shapes that sell one.
+
+    A thin wrapper over :func:`_discover` so the probe runs once for every
+    path through it. The body below has four returns — API only, crawl only,
+    nothing new, merged — and repeating the probe at each is how one of them
+    quietly keeps the old behaviour forever.
+
+    See :mod:`crawler.filtering.shape_probe` for why the shapes have to be
+    asked about rather than read off the URL.
+    """
+    # Imported here, not at module scope: shape_probe reads group_by_shape
+    # from this module, and importing it eagerly closes the loop.
+    from crawler.filtering.shape_probe import keep_proven_shapes
+
+    found = await _discover(profile, timeout, crawl_budget)
+    return await keep_proven_shapes(profile, found)
+
+
+async def _discover(
+    profile: SiteProfile,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    crawl_budget: int = CRAWL_BUDGET_PAGES,
+) -> UrlDiscovery:
     """Find tour URLs from a profiled site.
 
     Three sources, cheapest first: the site's JSON API, its sitemap, and a
@@ -554,7 +577,7 @@ def _from_urls(profile: SiteProfile, urls: list[str], source: str) -> UrlDiscove
 
     groups = [
         UrlGroup(shape=shape, urls=url_list)
-        for shape, url_list in _group_by_shape(sorted(urls)).items()
+        for shape, url_list in group_by_shape(sorted(urls)).items()
     ]
     for group in groups:
         _score_group(group, total_urls=result.total_seen)
