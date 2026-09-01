@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 import asyncio
-from urllib.parse import unquote, urljoin, urlparse
+from urllib.parse import parse_qsl, unquote, urljoin, urlparse
 from collections import defaultdict
 from typing import Optional
 
@@ -51,6 +51,12 @@ LISTING_SIGNS = (
     "دسته", "آرشیو", "برچسب",
 )
 
+# Query keys that name a container rather than the thing itself. lachinseir.com
+# numbers its tours with ?id= and its listings with ?catid=, both varying.
+CONTAINER_KEYS = (
+    "cat", "category", "parent", "group", "section", "list", "tag", "type", "menu",
+)
+
 MAX_SITEMAP_URLS = 5000  # stop reading a sitemap after this many
 MAX_API_PAGES = 50       # stop paging an API after this many pages
 
@@ -71,6 +77,9 @@ _NUMERIC = re.compile(r"^\d+$")
 # were read as 26 fixed words instead of one shape.
 _MIN_DISTINCT_FOR_SLUG = 4
 _SLUG_SHARE = 0.02
+
+# How much of a group a query key must appear on to number it.
+_QUERY_KEY_SHARE = 0.8
 
 
 def _is_identifier(seg: str) -> bool:
@@ -130,6 +139,44 @@ def group_by_shape(urls: list[str]) -> dict[str, list[str]]:
     return shaped
 
 
+def _numbered_by_query(urls: list[str]) -> Optional[str]:
+    """The query key that numbers these URLs, if one does.
+
+    Some sites put the identity in the query rather than the path, and
+    :func:`group_by_shape` reads only the path — so all 60 of lachinseir.com's
+    ``/tour.bc?lid=1&id=…`` share one shape with nothing varying in it. The key
+    has to be present on nearly every URL, take at least two values, and be all
+    digits, which is what tells ``?id=2352726`` from ``?sort=cheap``.
+
+    A key naming a container is refused. The same site lists its categories at
+    ``?catid=`` and its articles at ``?parentid=``, and both vary exactly as an
+    item id does.
+
+    Example:
+        >>> _numbered_by_query(["https://x.com/t.bc?lid=1&id=11",
+        ...                     "https://x.com/t.bc?lid=1&id=12"])
+        'id'
+        >>> _numbered_by_query(["https://x.com/t.bc?catid=21",
+        ...                     "https://x.com/t.bc?catid=22"]) is None
+        True
+    """
+    values: dict[str, set[str]] = defaultdict(set)
+    seen: dict[str, int] = defaultdict(int)
+    for url in urls:
+        for key, value in parse_qsl(urlparse(url).query):
+            values[key].add(value)
+            seen[key] += 1
+
+    for key, found in values.items():
+        if key.lower().replace("_", "").removesuffix("id") in CONTAINER_KEYS:
+            continue
+        if len(found) < 2 or seen[key] < len(urls) * _QUERY_KEY_SHARE:
+            continue
+        if all(value.isdigit() for value in found):
+            return key
+    return None
+
+
 def _score_group(group: UrlGroup, total_urls: int = 0) -> float:
     """Judge whether this URL shape is tour detail pages.
 
@@ -147,10 +194,14 @@ def _score_group(group: UrlGroup, total_urls: int = 0) -> float:
         score += 0.4
         reasons.append(f"path holds '{matched_word}'")
 
-    # A varying id or slug in the path means one page per thing — a detail page.
+    # A varying id or slug means one page per thing — a detail page.
+    numbering_key = _numbered_by_query(group.urls)
     if "<num>" in group.shape or "<id>" in group.shape:
         score += 0.3
         reasons.append("numbered series")
+    elif numbering_key:
+        score += 0.3
+        reasons.append(f"numbered series (?{numbering_key}=)")
     elif "<slug>" in group.shape:
         score += 0.2
         reasons.append("one page per item")
