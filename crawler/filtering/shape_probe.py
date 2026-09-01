@@ -103,8 +103,13 @@ async def prove_shapes(
                 info.notes.append(f"{shape}: {type(error).__name__} on a sample")
                 continue
             if page.status_code and page.status_code >= 400:
+                info.notes.append(f"{shape} <- {url} answered {page.status_code}")
                 continue
             read += 1
+            info.notes.append(
+                f"{shape} <- {url} gave {len(page.rows)} rows"
+                f" and {len(page.expired_rows)} departed"
+            )
             if page.rows or page.expired_rows:
                 sells = True
                 break
