@@ -61,36 +61,16 @@ CRAWL_BUDGET_PAGES = 60
 MIN_GROUP_SCORE = 0.5    # a group must score at least this to be selected
 
 # How far below the best-scoring shape another shape may sit and still be kept.
-# Measured against the six sites: the shapes that turned out to be a second
-# genuine tour type scored level with the winner (tahagasht's /tours/item/<slug>
-# at 0.90 beside /tours/<slug> at 0.90), while the junk that also clears the
-# threshold — flight pages, blog posts, seasonal landing pages — sat 0.2 or more
-# below it.
-#
-# It is not free of error. On bisanseir.com it also admits 72 category pages
-# that score level with the winner and yield nothing, against 325 real
-# departure pages recovered on tahagasht.com. Scoring cannot separate those two
-# by shape alone — both are "the plural of the winner" or "one level deeper" —
-# and 72 wasted fetches is the cheaper mistake.
 _SHAPE_MARGIN = 0.1
 
-
-# A slug that is really an identifier: "65694", "d-2291", "a1b2c3d4". The test
-# is that digits dominate the segment — a title that merely contains a number
-# ("bali-5-nights", "slug-100") is still a slug, and treating it as an id would
-# split one content type into two groups and drop whichever lost.
 _NUMERIC = re.compile(r"^\d+$")
 
-
 # When a path segment counts as a varying title rather than a fixed section
-# name. The old rule asked the segment to differ across *most* URLs in its
-# bucket, which is wrong wherever a slug legitimately repeats: alefbatour.com
-# publishes one page per departure date under one slug, so 850 URLs share 104
-# slugs and every one of them was read as a fixed word. Measured across the six
-# sites, anything from a 2% to a 10% share gives the same answer, so the value
-# is not delicate — it only has to sit well below "most".
+# name. A slug repeats wherever a tour has several departures, so the share has
+# to sit low: radingasht.com's 407 tour URLs share 26 slugs, and at 10% they
+# were read as 26 fixed words instead of one shape.
 _MIN_DISTINCT_FOR_SLUG = 4
-_SLUG_SHARE = 0.10
+_SLUG_SHARE = 0.02
 
 
 def _is_identifier(seg: str) -> bool:
