@@ -70,6 +70,33 @@ def shape_of(url: str, shapes: dict[str, list[str]]) -> Optional[str]:
     return None
 
 
+def _from_tour_shape(
+    per_shape: dict[str, Optional[bool]],
+    info: UrlShapeInfo,
+    baseline: Optional[bool],
+) -> Optional[bool]:
+    """The render answer learned from a tour shape, ignoring the guide shapes.
+
+    Whether a browser earns its cost is a fact about a kind of page, not about
+    a site: lachinseir.com's guide pages hold nothing rendered or not, and the
+    ``0 against 0`` they scored switched rendering off for the 29 tour pages a
+    rendered sample had just proved it worked on.
+
+    Example:
+        >>> info = UrlShapeInfo(tour_shapes=["/tour.bc"], guide_shapes=["/tour/<slug>"])
+        >>> _from_tour_shape({"/tour.bc": True, "/tour/<slug>": False}, info, None)
+        True
+        >>> _from_tour_shape({"/tour/<slug>": False}, info, None) is None
+        True
+    """
+    answers = [per_shape.get(shape) for shape in info.tour_shapes]
+    if True in answers:
+        return True
+    if False in answers:
+        return False
+    return baseline
+
+
 async def prove_shapes(
     profile: SiteProfile,
     urls: list[str],
@@ -90,8 +117,12 @@ async def prove_shapes(
         info.notes.append("no URLs to probe")
         return info
 
+    baseline = profile.rendering.render_helps
+    per_shape: dict[str, Optional[bool]] = {}
+
     shapes = group_by_shape(sorted(urls))
     for shape, members in sorted(shapes.items(), key=lambda kv: -len(kv[1])):
+        profile.rendering.render_helps = baseline
         sells = False
         read = 0
         for url in members[:samples_per_shape]:
@@ -115,17 +146,61 @@ async def prove_shapes(
                 break
             await asyncio.sleep(PROBE_DELAY_SECONDS)
 
+        per_shape[shape] = profile.rendering.render_helps
         if read == 0:
             info.notes.append(f"{shape}: no sample could be read")
             continue
         info.tested = True
         (info.tour_shapes if sells else info.guide_shapes).append(shape)
 
+    profile.rendering.render_helps = _from_tour_shape(per_shape, info, baseline)
+
     if not info.tested:
         info.notes.append("no shape could be read; keeping every URL")
     elif not info.tour_shapes:
         info.notes.append("no shape yielded a row")
     return info
+
+
+async def _confirm_render(profile: SiteProfile, urls: list[str]) -> None:
+    """Ask a second approved page whether the browser is really unnecessary.
+
+    The probe stops at the first page of a shape that sells, so the answer can
+    rest on one page — and a tour whose markup happens to be whole would then
+    switch the browser off for the ones whose markup is not. A second page is
+    the cheapest guard against that, and it is skipped where the first already
+    said yes.
+
+    Rendering wins a disagreement: a page that gained rows proves a browser can
+    help here, while a page that gained none only proves it did not need one.
+
+    Example:
+        >>> import asyncio
+        >>> profile = SiteProfile(domain="x.com")
+        >>> profile.rendering.render_helps = True
+        >>> asyncio.run(_confirm_render(profile, ["https://x.com/t/1"]))
+        >>> profile.rendering.render_helps
+        True
+    """
+    if profile.rendering.render_helps is True or not urls:
+        return
+
+    first = profile.rendering.render_helps
+    profile.rendering.render_helps = None
+    try:
+        await extract_page(urls[len(urls) // 2], profile,
+                           follow_dates=PROBE_FOLLOW_DATES)
+    except Exception:
+        profile.rendering.render_helps = first
+        return
+
+    second = profile.rendering.render_helps
+    if True in (first, second):
+        profile.rendering.render_helps = True
+    elif False in (first, second):
+        profile.rendering.render_helps = False
+    else:
+        profile.rendering.render_helps = None
 
 
 async def keep_proven_shapes(
@@ -159,6 +234,7 @@ async def keep_proven_shapes(
         url for url in found.tour_urls
         if shape_of(url, shapes) in info.tour_shapes
     ]
+    await _confirm_render(profile, kept)
     dropped = len(found.tour_urls) - len(kept)
     found.tour_urls = kept
     found.total_kept = len(kept)
