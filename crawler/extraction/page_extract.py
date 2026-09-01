@@ -628,7 +628,11 @@ def _settle_render_question(
                                today=today).rows
     )
     helped = rendered_rows > len(plain.rows)
-    profile.rendering.render_helps = helped
+    # A page that gave nothing either way says nothing about the site. On
+    # lachinseir.com a guide page scored 0 against 0 and switched rendering off
+    # for the 29 tour pages a rendered sample had just proved it worked on.
+    if rendered_rows or plain.rows:
+        profile.rendering.render_helps = helped
     profile.rendering.notes = (
         f"rendering a tour page gave {rendered_rows} rows against "
         f"{len(plain.rows)} without it"
