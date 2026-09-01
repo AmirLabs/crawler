@@ -55,10 +55,9 @@ SITES = ("tahagasht", "lachinseir", "chakavaktravel", "radingasht")
 
 DEFAULT_PAGES = 10
 
-# How many candidates may be opened to find ``pages`` that still sell something.
-# A shape can hold a page whose departures have all gone, and giving up at the
-# first of those would report far fewer pages than the site has.
-ATTEMPTS_PER_PAGE = 3
+# How many candidates may be opened per page wanted. tahagasht.com answered 404
+# on nine of its first ten, so a small budget reports an empty site that is not.
+ATTEMPTS_PER_PAGE = 12
 
 ROWS_SHOWN = 20
 SAMPLE_URLS_SHOWN = 3
@@ -133,41 +132,78 @@ async def check_site(domain: str, pages: int) -> dict:
     print(f"  approved {profile.url_shapes.tour_shapes or '(none)'};"
           f" {len(before)} -> {len(found.tour_urls)} URLs", flush=True)
 
-    result["pages"] = await read_pages(profile, found.tour_urls, pages)
+    result["pages"], result["skipped"] = await read_pages(
+        profile, found.tour_urls, pages
+    )
     print(f"  done in {time.monotonic() - started:.0f}s", flush=True)
     return result
 
 
+def _spread(urls: list[str], wanted: int) -> list[str]:
+    """The approved list reordered so the first tries are spread across it.
+
+    Taking the first N would take one destination: these lists are alphabetical
+    and a site's first forty URLs are often forty departures of one tour.
+
+    Example:
+        >>> _spread(["a", "b", "c", "d"], 2)
+        ['a', 'c', 'b', 'd']
+    """
+    step = max(1, len(urls) // max(wanted, 1))
+    first = urls[::step]
+    rest = [url for url in urls if url not in set(first)]
+    return first + rest
+
+
 async def read_pages(
     profile: SiteProfile, urls: list[str], wanted: int
-) -> list[dict]:
-    """Read pages from the approved list until ``wanted`` of them still sell."""
+) -> tuple[list[dict], list[dict]]:
+    """Keep opening approved URLs until ``wanted`` of them still sell something.
+
+    Returns the pages that sold and, beside them, every URL that did not and
+    the reason. tahagasht.com's sitemap lists departures it has since taken
+    down, so nine of ten first tries answered 404 — a fact worth reading rather
+    than a run worth cutting short.
+    """
     out: list[dict] = []
+    skipped: list[dict] = []
     if not urls:
-        return out
+        return out, skipped
 
-    step = max(1, len(urls) // max(wanted * ATTEMPTS_PER_PAGE, 1))
-    candidates = urls[::step][: wanted * ATTEMPTS_PER_PAGE]
-
-    for url in candidates:
+    for url in _spread(urls, wanted)[:wanted * ATTEMPTS_PER_PAGE]:
         if len(out) >= wanted:
             break
         started = time.monotonic()
         try:
             page = await extract_page(url, profile, timeout=40)
         except Exception as error:
-            print(f"    FAILED {type(error).__name__} {url[:70]}", flush=True)
+            skipped.append({"url": url, "why": f"{type(error).__name__}: {error}"})
+            print(f"    skipped ({type(error).__name__})  {url[:62]}", flush=True)
             continue
+
         rows = live_rows(page)
-        print(f"    [{len(out) + 1}/{wanted}] {len(rows)} live,"
-              f" {len(page.expired_rows)} departed, {time.monotonic() - started:.0f}s"
-              f"  {url[:64]}", flush=True)
-        if not rows:
-            continue
-        out.append({"url": url, "rows": rows, "notes": page.notes,
-                    "departed": len(page.expired_rows)})
+        took = time.monotonic() - started
+        if rows:
+            out.append({"url": url, "rows": rows, "notes": page.notes,
+                        "departed": len(page.expired_rows)})
+            print(f"    [{len(out)}/{wanted}] {len(rows)} live,"
+                  f" {len(page.expired_rows)} departed, {took:.0f}s  {url[:58]}",
+                  flush=True)
+        else:
+            if page.status_code and page.status_code >= 400:
+                why = f"the site answered {page.status_code}"
+            elif page.expired_rows:
+                why = f"{len(page.expired_rows)} offers, all departed"
+            else:
+                why = "no offer could be read"
+            skipped.append({"url": url, "why": why})
+            print(f"    skipped ({why})  {url[:56]}", flush=True)
         await asyncio.sleep(1.0)
-    return out
+
+    if len(out) < wanted:
+        print(f"    only {len(out)} of {wanted} sold after"
+              f" {len(out) + len(skipped)} tries", flush=True)
+    return out, skipped
 
 
 # --------------------------------------------------------------------------- #
@@ -238,9 +274,11 @@ def write_filtering(result: dict, folder: Path) -> None:
 
 def write_tours(result: dict, folder: Path) -> None:
     pages = result.get("pages") or []
+    skipped = result.get("skipped") or []
     lines: list[str] = [
         f"{result['domain']} — what the approved pages give",
-        f"{len(pages)} pages, audited {result['stamp']}",
+        f"{len(pages)} pages sold, {len(skipped)} gave nothing,"
+        f" audited {result['stamp']}",
         "",
         "Only offers that have not departed are listed. Empty fields are left",
         "out; a page showing more than "
@@ -251,6 +289,17 @@ def write_tours(result: dict, folder: Path) -> None:
         lines.append(f"no page was audited: {result['error']}")
     elif not pages:
         lines.append("no approved URL produced a live offer")
+
+    if skipped:
+        lines += [
+            "",
+            f"[{len(skipped)} URLs that passed the filter and gave nothing]",
+            "Open these to say whether the page is really gone or we misread it.",
+        ]
+        for entry in skipped:
+            lines.append(f"   {entry['why']}")
+            lines.append(f"       {entry['url']}")
+        lines.append(HEAD)
 
     for number, page in enumerate(pages, 1):
         lines += [
