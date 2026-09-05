@@ -241,17 +241,27 @@ class Agency:
 
 @dataclass
 class TourOffer:
-    """One thing a customer can actually book: a date plus a hotel.
+    """One thing a customer can actually book: a date plus where it sleeps.
 
     This is the real grain of the data. Prices hang off it keyed by room type,
-    because one date-plus-hotel row carries several prices at once (double,
-    single, child with bed, ...) — exactly how both target sites lay them out.
+    because one bookable option carries several prices at once (double, single,
+    child with bed, ...) — exactly how the target sites lay them out.
+
+    ``hotels`` is a list because a multi-city tour is one price covering a stay
+    in each city: avisatravel.com's "تور بالی + اوبود" sleeps in two hotels for
+    one number, and bisanseir.com's Bali tour in four. Half of avisatravel's
+    rows and a fifth of bisanseir's are like that, so the single hotel this
+    field used to hold was joining them into "ده ادن + سنس" — one string that
+    no longer says which hotel is in which city, or how many nights each got.
+
+    A single-hotel offer is a list of one. That keeps one rule for both, and
+    matches the client's own JSON, which always sends an array.
     """
 
     departure: TourDate = field(default_factory=TourDate)
     ret: TourDate = field(default_factory=TourDate)
     nights: Optional[int] = None
-    hotel: Optional[Hotel] = None
+    hotels: list[Hotel] = field(default_factory=list)
     transport: Optional[Transport] = None
 
     # Keyed by a ROOM_* value. A dict rather than fixed fields so an unusual
@@ -263,6 +273,18 @@ class TourOffer:
     source_key: Optional[str] = None
 
     # --- convenience views onto the required output fields ------------------ #
+
+    @property
+    def hotel(self) -> Optional[Hotel]:
+        """The first hotel, for the flat view that can only carry one.
+
+        Example:
+            >>> TourOffer(hotels=[Hotel(name="تکسیم استار")]).hotel.name
+            'تکسیم استار'
+            >>> TourOffer().hotel is None
+            True
+        """
+        return self.hotels[0] if self.hotels else None
 
     @property
     def adult_price(self) -> Optional[Price]:
@@ -397,6 +419,8 @@ class Tour:
         rows: list[dict] = []
         for offer in self.offers:
             hotel = offer.hotel or Hotel()
+            names = [h.name for h in offer.hotels if h.name]
+            cities = [h.city for h in offer.hotels if h.city]
             row: dict = {
                 "tour_name": self.tour_name,
                 "origin": self.origin,
@@ -420,7 +444,7 @@ class Tour:
                 "return_date_jalali": offer.ret.jalali,
                 "number_of_nights": offer.nights if offer.nights is not None else hotel.nights,
                 # Singular at this grain: one row is one hotel on one date.
-                "hotels": hotel.name,
+                "hotels": " + ".join(names) if names else None,
                 "hotel_star_rating": hotel.star_rating,
                 "image_url": self.image_url,
                 "tour_url": self.tour_url,
@@ -430,7 +454,7 @@ class Tour:
                 "is_installment_available": self.is_installment_available,
                 # Extra context that would otherwise be lost in the flattening.
                 "board_type": hotel.board_type,
-                "hotel_city": hotel.city,
+                "hotel_city": " + ".join(cities) if cities else None,
                 "departure_time": offer.departure.time,
                 "return_time": offer.ret.time,
                 "transport_name": (offer.transport.name if offer.transport else None),

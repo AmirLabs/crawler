@@ -227,8 +227,8 @@ def _rows_from_bundles(data: dict) -> list[ExtractedRow]:
         if not isinstance(bundle, dict):
             continue
         stays = [a for a in (bundle.get("accommodations") or []) if isinstance(a, dict)]
-        # A stay that moves city lists several hotels under one price. Joined
-        # the way the markup reader joins them, so both paths agree.
+        # The flat names stay for the readers that can only carry one hotel;
+        # ``hotels`` below is the same stays with nothing thrown away.
         names = " + ".join(a.get("name") or a.get("latinName") or "" for a in stays).strip(" +")
         grades = [a.get("grade") for a in stays if isinstance(a.get("grade"), (int, float))]
         boards = [(a.get("boardType") or {}).get("boardType") for a in stays]
@@ -250,6 +250,7 @@ def _rows_from_bundles(data: dict) -> list[ExtractedRow]:
             put("hotel_star_rating", int(grades[0]) if grades else None, "accommodations[].grade")
             put("board_type", boards[0] if boards else None, "accommodations[].boardType")
             put("hotel_city", " + ".join(cities) if cities else None, "accommodations[].locationName")
+            put("hotels", [_stay(a) for a in stays] or None, "accommodations[]")
             put("room_type", detect_room_type(entry.get("title") or ""), "prices[].title")
             put("price", price, "prices[].price")
             put("nights", nights, "stayCount")
@@ -265,6 +266,33 @@ def _rows_from_bundles(data: dict) -> list[ExtractedRow]:
                 )
             )
     return rows
+
+
+def _stay(accommodation: dict) -> dict:
+    """One accommodation as the fields a hotel needs, nothing joined.
+
+    The API states every hotel of a multi-city stay in full — its own grade,
+    board and ``stayCount`` — and the flat ``hotel_*`` fields could carry only
+    the first, so a Bali tour reported 4 stars and lost the 3 nights in Ubud
+    entirely.
+
+    Example:
+        >>> _stay({"name": "ده ادن", "latinName": "The Eden", "grade": 4.0,
+        ...        "locationName": "بالی", "stayCount": 4,
+        ...        "boardType": {"boardType": "BB"}})
+        {'name': 'ده ادن', 'name_latin': 'The Eden', 'star_rating': 4, 'city': 'بالی', 'board_type': 'BB', 'nights': 4}
+    """
+    grade = accommodation.get("grade")
+    stay = accommodation.get("stayCount")
+    board = (accommodation.get("boardType") or {}).get("boardType")
+    return {
+        "name": accommodation.get("name") or accommodation.get("latinName"),
+        "name_latin": accommodation.get("latinName"),
+        "star_rating": int(grade) if isinstance(grade, (int, float)) else None,
+        "city": accommodation.get("locationName"),
+        "board_type": board,
+        "nights": int(stay) if isinstance(stay, (int, float)) else None,
+    }
 
 
 def enrich_from_api(page: ExtractedPage, data: dict) -> ExtractedPage:

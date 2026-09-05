@@ -91,7 +91,7 @@ def output_fields() -> tuple[str, ...]:
         (True, True)
     """
     tour = Tour(tour_url="u", tour_name="t")
-    tour.offers = [TourOffer(hotel=Hotel(name="h"), departure=TourDate(), ret=TourDate())]
+    tour.offers = [TourOffer(hotels=[Hotel(name="h")], departure=TourDate(), ret=TourDate())]
     return tuple(tour.to_rows()[0])
 
 

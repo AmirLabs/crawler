@@ -299,13 +299,33 @@ def _build_offer(
         or _nights_between(departure, ret)
     )
 
-    hotel = Hotel(
-        name=_value(first, "hotel_name"),
-        city=_value(first, "hotel_city"),
-        star_rating=_value(first, "hotel_star_rating"),
-        board_type=_value(first, "board_type"),
-        nights=nights,
-    )
+    stays = _value(first, "hotels")
+    if isinstance(stays, list) and stays:
+        # Where the source stated each hotel in full, keep them all: a stay
+        # that moves city has a grade, a board and a night count per hotel,
+        # and the flat fields below can only carry the first of each.
+        hotels = [
+            Hotel(
+                name=stay.get("name"),
+                name_latin=stay.get("name_latin"),
+                city=stay.get("city"),
+                star_rating=stay.get("star_rating"),
+                board_type=stay.get("board_type"),
+                nights=stay.get("nights"),
+            )
+            for stay in stays
+            if isinstance(stay, dict)
+        ]
+    else:
+        hotels = [
+            Hotel(
+                name=_value(first, "hotel_name"),
+                city=_value(first, "hotel_city"),
+                star_rating=_value(first, "hotel_star_rating"),
+                board_type=_value(first, "board_type"),
+                nights=nights,
+            )
+        ]
 
     transport_name = _value(first, "transport_name")
     transport_duration = _value(first, "transport_duration")
@@ -327,7 +347,7 @@ def _build_offer(
         departure=departure,
         ret=ret,
         nights=nights,
-        hotel=hotel,
+        hotels=hotels,
         transport=transport,
         prices=prices,
         source_key=rows[0].source_path,
