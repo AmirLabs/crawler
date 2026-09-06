@@ -1,0 +1,65 @@
+name: Bug
+description: Report a failure, crash, or behavior that breaks an existing contract.
+title: "bug: "
+labels: ["type: bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Report the observed behavior with a real, reproducible example. Do not add a domain-specific rule when a page-shape rule is needed.
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Pipeline stage
+      options:
+        - profiler
+        - filtering
+        - extraction
+        - schema
+        - llm
+        - automation
+        - shared or unknown
+    validations:
+      required: true
+  - type: textarea
+    id: sample
+    attributes:
+      label: Affected URL or input
+      description: Provide one or more safe URLs, fixture names, or input samples.
+      placeholder: https://example.com/tour/example
+    validations:
+      required: true
+  - type: textarea
+    id: current
+    attributes:
+      label: Current behavior
+      description: Include the actual output, error, or incorrect field value.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: State the correct output or contract. Prefer None over a guessed value.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction and evidence
+      description: Include the command, observed counts, and relevant source text or JSON path.
+      placeholder: |
+        Command:
+        Observed: 3 rows, 1 wrong price
+        Evidence:
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I removed credentials and private data.
+          required: true
+        - label: I checked that the failure is not caused by an out-of-scope PDF, image, or tahagasht online URL.
+          required: true

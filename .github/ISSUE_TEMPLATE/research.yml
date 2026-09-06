@@ -1,0 +1,47 @@
+name: Research
+description: Investigate an uncertain behavior before selecting an implementation or threshold.
+title: "research: "
+labels: ["type: research"]
+body:
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Pipeline stage
+      options:
+        - profiler
+        - filtering
+        - extraction
+        - schema
+        - llm
+        - automation
+        - shared
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Question to answer
+      description: Write the decision this research must unblock.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and initial evidence
+      description: Include known URLs, observed counts, and competing explanations.
+    validations:
+      required: true
+  - type: textarea
+    id: method
+    attributes:
+      label: Measurement plan
+      description: Define the sample, commands or observations, and how results will be compared.
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Completion criteria
+      description: State the expected written finding and the implementation decision it will support.
+    validations:
+      required: true
