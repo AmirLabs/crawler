@@ -6,11 +6,21 @@ it, so Amir can open that page and say whether the site stated the value or
 never had it. Only he can make that call; this script's job is to make the
 check fast.
 
-Three files per site, and no more, under ``logs/<site>/``:
+Four files per site, and no more, under ``logs/<site>/`` — or under
+``logs/<release>/<site>/`` when ``--out`` names a release, so one run's numbers
+can be kept beside the next one's and compared:
 
     report.txt    every page audited and every value it produced
     missing.txt   by field: the pages where it came out empty, and why
     score.txt     how much of each field we managed to read, and the sum
+    skipped.txt   the URLs that sold nothing, and what they answered instead
+
+Only a page that actually sold something is scored. A URL that answers 404, or
+whose every departure has already gone, says nothing about our rules: counting
+it put lachinseir.com at 0% on all sixty fields when the five URLs picked were
+all dead, which read as broken extraction and was not. Those URLs go to
+``skipped.txt`` for Amir to judge, and the script keeps opening more until it
+has the five real pages it was asked for.
 
 The field list is not written here. It is read from
 :meth:`crawler.schema.output_models.Tour.to_rows`, so a column added to the
@@ -25,6 +35,7 @@ Run::
     .venv/bin/python scripts/run_field_audit.py --domain bisanseir
     .venv/bin/python scripts/run_field_audit.py --domain bisanseir --pages 3
     .venv/bin/python scripts/run_field_audit.py --repeat-seen
+    .venv/bin/python scripts/run_field_audit.py --out v1.1.1
 
 Progress is printed as it goes — one line per page, with the row count and the
 time it took — so a long run can be told from a hung one.
@@ -54,6 +65,7 @@ from crawler.extraction.page_extract import extract_page
 from crawler.filtering.tour_groups import group_by_tour
 from crawler.filtering.url_filter import discover_tour_urls
 from crawler.llm.tour_names import fill_page_places
+from crawler.profiler.models import SiteProfile
 from crawler.profiler.profiler import profile_site
 from crawler.schema.converter import build_tour
 from crawler.schema.output_models import Hotel, Tour, TourDate, TourOffer
@@ -71,6 +83,12 @@ DEFAULT_PAGES = 5
 # to the end of is not a check. Every field of every row shown is complete;
 # what is cut is repetition, and the count of what was cut is printed.
 ROWS_SHOWN = 25
+
+# How many URLs may be opened for each page wanted, before giving up. Nine of
+# tahagasht.com's first ten tries answer 404 because its sitemap still lists
+# departures it has taken down, so a budget near the wanted count would report
+# a live site as an empty one.
+ATTEMPTS_PER_PAGE = 12
 
 # httpx logs a line per request at INFO, and this script makes hundreds. Left
 # on, its own progress lines are lost in the middle of them — which defeats the
@@ -261,12 +279,77 @@ def audit_page(page: ExtractedPage) -> dict:
     }
 
 
+def _nothing_sold(page: ExtractedPage) -> str:
+    """Why a URL that answered carried no offer, in the terms Amir judges it in.
+
+    He is the one who decides whether a page was never a tour or is a tour that
+    has gone, so the reason has to say which of the two the page looked like
+    rather than folding both into "empty".
+
+    Example:
+        >>> _nothing_sold(ExtractedPage(url="u", status_code=404))
+        'the site answered 404'
+        >>> _nothing_sold(ExtractedPage(url="u"))
+        'no offer could be read'
+    """
+    if page.status_code and page.status_code >= 400:
+        return f"the site answered {page.status_code}"
+    if page.expired_rows:
+        return f"{len(page.expired_rows)} offers, all already departed"
+    return "no offer could be read"
+
+
+async def read_pages(
+    profile: SiteProfile, urls: list[str], wanted: int
+) -> tuple[list[ExtractedPage], list[dict]]:
+    """Keep opening tour URLs until ``wanted`` of them sold something.
+
+    Returns the pages that sold and, beside them, every URL that did not and
+    what it answered instead. Nothing in the second list reaches the score.
+
+    extract_page, not extract_page_from_html: the second reads the markup and
+    nothing else, so a site whose offers come from its own API or from a page
+    that offers several dates reports zero rows and looks broken.
+    """
+    kept: list[ExtractedPage] = []
+    skipped: list[dict] = []
+    for url in urls[: wanted * ATTEMPTS_PER_PAGE]:
+        if len(kept) >= wanted:
+            break
+        started = time.monotonic()
+        print(f"  [{len(kept) + 1}/{wanted}] {url[:88]}", flush=True)
+        try:
+            page = await extract_page(url, profile, timeout=40)
+        except Exception as error:  # a dead page must not end the run
+            skipped.append({"url": url, "why": f"{type(error).__name__}: {error}"})
+            print(f"        skipped ({type(error).__name__}) after"
+                  f" {time.monotonic() - started:.0f}s", flush=True)
+            continue
+
+        took = time.monotonic() - started
+        sold = build_tour(page).to_rows()
+        if sold:
+            kept.append(page)
+            print(f"        {len(sold)} rows, {len(page.expired_rows)} expired,"
+                  f" {took:.0f}s", flush=True)
+        else:
+            why = _nothing_sold(page)
+            skipped.append({"url": url, "why": why})
+            print(f"        skipped ({why}) {took:.0f}s", flush=True)
+        await asyncio.sleep(1.0)
+
+    if len(kept) < wanted:
+        print(f"  only {len(kept)} of {wanted} URLs sold, after"
+              f" {len(kept) + len(skipped)} tries", flush=True)
+    return kept, skipped
+
+
 async def audit_site(domain: str, pages: int, repeat_seen: bool) -> dict:
-    """Crawl up to ``pages`` tour pages of one site and report each one."""
+    """Crawl one site until ``pages`` of its tour pages sell, and report each."""
     site = _short(domain)
     result: dict = {
         "domain": domain, "name": site, "status": "ok",
-        "pages": [], "notes": [], "skipped_seen": 0,
+        "pages": [], "notes": [], "skipped": [], "skipped_seen": 0,
     }
 
     print(f"  profiling {domain} ...", flush=True)
@@ -304,39 +387,25 @@ async def audit_site(domain: str, pages: int, repeat_seen: bool) -> dict:
     # Unseen pages first. If a site has run out of them, fall back to ones
     # already audited rather than reporting nothing: an empty report reads like
     # a broken site, and a site with too few pages is a fact worth stating.
-    picks = fresh[:pages]
-    if len(picks) < pages:
-        topped_up = [u for u in ordered if u not in picks][: pages - len(picks)]
-        picks += topped_up
-        if topped_up:
-            result["notes"].append(
-                f"only {len(fresh)} unseen tour URLs left; "
-                f"{len(topped_up)} of these pages were audited before"
-            )
+    tries = fresh + [u for u in ordered if u in already]
+    if len(fresh) < pages:
+        result["notes"].append(
+            f"only {len(fresh)} unseen tour URLs left; pages beyond that were"
+            f" audited before"
+        )
 
-    if not picks:
+    if not tries:
         result["status"] = "NO PAGES"
         result["notes"].append(f"no tour URLs to audit ({len(candidates)} candidates)")
         return result
 
-    # extract_page, not extract_page_from_html: the second reads the markup and
-    # nothing else, so a site whose offers come from its own API or from a page
-    # that offers several dates reports zero rows and looks broken.
-    extracted: list[ExtractedPage] = []
-    for number, url in enumerate(picks, start=1):
-        started = time.monotonic()
-        print(f"  [{number}/{len(picks)}] {url[:88]}", flush=True)
-        try:
-            page = await extract_page(url, profile, timeout=40)
-        except Exception as error:  # a dead page must not end the run
-            result["notes"].append(f"{url} -> {error}")
-            print(f"        FAILED after {time.monotonic() - started:.0f}s: {error}",
-                  flush=True)
-            continue
-        extracted.append(page)
-        print(f"        {len(page.rows)} rows, {len(page.expired_rows)} expired,"
-              f" {time.monotonic() - started:.0f}s", flush=True)
-        await asyncio.sleep(1.0)
+    extracted, result["skipped"] = await read_pages(profile, tries, pages)
+    if not extracted:
+        result["status"] = "NO LIVE PAGES"
+        result["notes"].append(
+            f"{len(result['skipped'])} URLs were opened and none sold anything"
+            f" — see skipped.txt"
+        )
 
     # One LLM call for all the titles rather than one per page: the instructions
     # cost far more than a title does. Most pages never get here — the title
@@ -490,6 +559,31 @@ def write_score(result: dict, folder: Path) -> None:
     (folder / "score.txt").write_text("\n".join(lines), encoding="utf-8")
 
 
+def write_skipped(result: dict, folder: Path) -> None:
+    """The URLs that passed the filter and sold nothing, for Amir to judge.
+
+    Kept out of the score on purpose: a page that has been taken down measures
+    the site, not our rules. Which of the two it is — never a tour, or a tour
+    whose dates have passed — is his call, and this is the list to make it on.
+    """
+    skipped = result.get("skipped") or []
+    lines = [
+        f"{result['domain']} — URLs that gave nothing",
+        f"{len(result['pages'])} pages scored, {len(skipped)} skipped,"
+        f" audited {_stamp()}",
+        "",
+        "None of these counted towards the score. Open one and say which it is:",
+        "a URL that was never a tour, or a tour whose departures have passed.",
+        "=" * 86,
+        "",
+    ]
+    if not skipped:
+        lines.append("every URL opened sold something")
+    for entry in skipped:
+        lines += [f"   {entry['why']}", f"   {entry['url']}", ""]
+    (folder / "skipped.txt").write_text("\n".join(lines), encoding="utf-8")
+
+
 def write_site(result: dict) -> Path:
     """The three files for one site, replacing whatever was there before."""
     folder = LOGS / result["name"]
@@ -500,6 +594,7 @@ def write_site(result: dict) -> Path:
     write_report(result, folder)
     write_missing(result, folder)
     write_score(result, folder)
+    write_skipped(result, folder)
     return folder
 
 
@@ -519,7 +614,8 @@ async def main(domain: Optional[str], pages: int, repeat_seen: bool) -> None:
         folder = write_site(result)
         rows = sum(p["rows"] for p in result["pages"])
         gaps = sum(len(p["missing"]) for p in result["pages"])
-        print(f"  -> {len(result['pages'])} pages, {rows} rows, {gaps} empty fields"
+        print(f"  -> {len(result['pages'])} pages, {rows} rows, {gaps} empty fields,"
+              f" {len(result['skipped'])} URLs skipped"
               f"  written to {folder}\n", flush=True)
 
     print(f"done in {time.monotonic() - started:.0f}s", flush=True)
@@ -534,5 +630,8 @@ if __name__ == "__main__":
         action="store_true",
         help="allow pages a previous run already audited",
     )
+    parser.add_argument("--out", help="write under logs/<OUT>/ instead of logs/")
     args = parser.parse_args()
+    if args.out:
+        LOGS = LOGS / args.out
     asyncio.run(main(args.domain, args.pages, args.repeat_seen))
