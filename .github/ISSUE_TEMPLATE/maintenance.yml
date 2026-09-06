@@ -1,0 +1,40 @@
+name: Maintenance
+description: Propose upkeep, refactoring, tooling, documentation, or dependency work.
+title: "maintenance: "
+labels: ["type: maintenance"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - dependencies
+        - developer tooling
+        - documentation
+        - refactoring
+        - observability
+        - security
+        - repository hygiene
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or maintenance need
+      description: Explain the current cost, risk, or constraint.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Proposed scope
+      description: List affected packages, files, or workflows. State what is intentionally out of scope.
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation and rollback considerations
+      description: State how the work will be checked and any operational or data-quality risk.
+    validations:
+      required: true

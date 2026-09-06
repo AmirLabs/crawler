@@ -1,0 +1,62 @@
+name: Data quality
+description: Report missing, duplicated, or incorrect extracted tour data.
+title: "data-quality: "
+labels: ["type: data-quality"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this when the pipeline completes but its rows are missing, duplicated, or wrong. Evidence must distinguish no extraction attempt from an attempted empty result.
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Pipeline stage
+      options:
+        - filtering
+        - extraction
+        - schema
+        - llm
+        - automation
+    validations:
+      required: true
+  - type: checkboxes
+    id: fields
+    attributes:
+      label: Affected output fields
+      options:
+        - label: departure date
+        - label: hotel
+        - label: room type
+        - label: price
+        - label: transport
+        - label: row count or duplication
+        - label: another field
+  - type: textarea
+    id: sample
+    attributes:
+      label: Sample URLs and source evidence
+      description: Give URLs and the source text, HTML shape, JSON path, or screenshot description that supports the expected data.
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: Measured impact
+      description: State the scope in rows or URLs and before/after fill rate if known.
+      placeholder: 12 of 44 rows have no room type; current fill rate is 73%.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual rows
+      description: Show a compact expected-versus-actual example. State whether attempts was recorded.
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation plan
+      description: Specify the URLs and counts that will verify a fix.
+    validations:
+      required: true

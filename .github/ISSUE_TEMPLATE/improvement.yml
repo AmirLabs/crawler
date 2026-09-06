@@ -1,0 +1,48 @@
+name: Improvement
+description: Improve an existing behavior with a measurable target.
+title: "improvement: "
+labels: ["type: improvement"]
+body:
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Pipeline stage
+      options:
+        - profiler
+        - filtering
+        - extraction
+        - schema
+        - llm
+        - automation
+        - shared
+    validations:
+      required: true
+  - type: textarea
+    id: current
+    attributes:
+      label: Current behavior and baseline
+      description: Include the command or dataset used, sample size, and measured baseline.
+      placeholder: "Current room-type fill rate: 73% across 44 rows."
+    validations:
+      required: true
+  - type: textarea
+    id: target
+    attributes:
+      label: Intended improvement
+      description: State the desired measurable result and why it matters.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Supporting examples
+      description: Include URLs and common text or structure shapes. Do not propose a domain-only rule.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria and validation
+      description: Give before/after measurements and checks that guard against wrong values.
+    validations:
+      required: true

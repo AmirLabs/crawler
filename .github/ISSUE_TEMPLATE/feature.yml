@@ -1,0 +1,55 @@
+name: Feature
+description: Propose a new capability with a defined user or operational outcome.
+title: "feature: "
+labels: ["type: feature"]
+body:
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Pipeline stage
+      options:
+        - profiler
+        - filtering
+        - extraction
+        - schema
+        - llm
+        - automation
+        - shared
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Problem and intended outcome
+      description: Describe who needs this and the observable result.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence and scope
+      description: Provide real URLs, volumes, or operational evidence. Describe a reusable page shape rather than a site-specific exception.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: State inputs, outputs, and important constraints.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: One checkable outcome per line.
+      placeholder: |
+        - [ ] Given ..., the output is ...
+        - [ ] Measured coverage is ...
+    validations:
+      required: true
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks and alternatives
+      description: Note data-quality, crawl-policy, or maintenance risks and any considered alternative.
