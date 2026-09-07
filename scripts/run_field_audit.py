@@ -105,7 +105,7 @@ def output_fields() -> tuple[str, ...]:
 
     Example:
         >>> fields = output_fields()
-        >>> "departure_date_jalali" in fields, "logo_url" in fields
+        >>> "departure_date" in fields, "logo_url" in fields
         (True, True)
     """
     tour = Tour(tour_url="u", tour_name="t")
@@ -130,8 +130,7 @@ _GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("what tour", ("tour_name", "origin", "destination", "destinations",
                    "transportation_type", "is_installment_available")),
     ("who sells it", ("agency_name", "website_url", "tour_url", "image_url", "logo_url")),
-    ("when", ("departure_date", "return_date", "departure_date_jalali",
-              "return_date_jalali", "departure_time", "return_time",
+    ("when", ("departure_date", "return_date", "departure_time", "return_time",
               "number_of_nights")),
     ("where you sleep", ("hotels", "hotel_star_rating", "hotel_city", "board_type")),
     ("how you travel", ("transport_name", "transport_duration")),
@@ -169,8 +168,6 @@ _NO_ROWS = "the page produced no rows at all"
 _EXTRACTION_NAME: dict[str, str] = {
     "number_of_nights": "nights",
     "hotels": "hotel_name",
-    "departure_date_jalali": "departure_date",
-    "return_date_jalali": "return_date",
     "departure_time": "departure_date",
     "return_time": "return_date",
     **{

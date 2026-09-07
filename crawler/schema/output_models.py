@@ -175,6 +175,12 @@ class TourDate:
     and the time removed. Both are kept because they answer different questions
     — ``raw`` says what the page claimed, ``jalali`` says what that resolves to
     in the calendar the customer reads.
+
+    ``iso`` stays inside the pipeline and is never shipped. It is what the date
+    arithmetic runs on — the night count, and whether a departure has already
+    gone — but the client reads Jalali, so ``to_rows`` sends ``jalali`` under
+    the agreed ``departure_date`` and ``return_date`` names and no second pair
+    of columns beside them.
     """
 
     raw: Optional[str] = None     # "24 مرداد" / "۱۴۰۵/۰۵/۲۴"
@@ -433,15 +439,8 @@ class Tour:
                     (offer.transport.transportation_type if offer.transport else None)
                     or self.transportation_type
                 ),
-                "departure_date": offer.departure.iso or offer.departure.raw,
-                "return_date": offer.ret.iso or offer.ret.raw,
-                # The same two dates in the calendar the customer reads. Shipped
-                # alongside rather than instead of the Gregorian ones: those
-                # sort and compare across sources, these are what a Persian
-                # traveller recognises, and deriving one from the other twice
-                # in two codebases is how the two drift apart.
-                "departure_date_jalali": offer.departure.jalali,
-                "return_date_jalali": offer.ret.jalali,
+                "departure_date": offer.departure.jalali or offer.departure.raw,
+                "return_date": offer.ret.jalali or offer.ret.raw,
                 "number_of_nights": offer.nights if offer.nights is not None else hotel.nights,
                 # Singular at this grain: one row is one hotel on one date.
                 "hotels": " + ".join(names) if names else None,
