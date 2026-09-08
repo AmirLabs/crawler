@@ -70,7 +70,7 @@ from crawler.extraction.tour_api import (
     fetch_tour_json,
 )
 from crawler.extraction.readers.dates import jalali_to_gregorian
-from crawler.extraction.readers.places import read_title_places
+from crawler.extraction.readers.places import find_origin, read_title_places
 from crawler.extraction.readers.transport import detect_transport, main_text
 from crawler.extraction.target_fields import PAGE_FIELDS, ROW_FIELDS, unresolved
 from crawler.profiler.models import SiteProfile
@@ -80,9 +80,8 @@ from crawler.profiler.models import SiteProfile
 _LOGO_PATH_ENDINGS = (".logo.url", ".logo.contentUrl", ".publisher.logo.url")
 
 # Which page-level fields this module actually looks for, and where it looks.
-# ``origin`` and ``is_installment_available`` are missing on purpose: no rule
-# reads them yet, and saying so is more useful than implying they were searched
-# for and absent.
+# ``is_installment_available`` is missing on purpose: no rule reads it yet, and
+# saying so is more useful than implying it was searched for and absent.
 _PAGE_ATTEMPTS: dict[str, str] = {
     "tour_name": f"{METHOD_HEURISTIC_HTML}:h1/og:title",
     "destination": f"{METHOD_HEURISTIC_HTML}:tour_name",
@@ -92,6 +91,7 @@ _PAGE_ATTEMPTS: dict[str, str] = {
     "website_url": f"{METHOD_EXACT_KEY}:page_host",
     "logo_url": f"{METHOD_EXACT_KEY}:json_ld_logo",
     "transportation_type": f"{METHOD_HEURISTIC_HTML}:transport",
+    "origin": f"{METHOD_HEURISTIC_HTML}:departure_airport",
 }
 
 
@@ -203,6 +203,14 @@ def read_page_fields(
     if places is not None and places.destinations:
         record("destinations", places.destinations, METHOD_HEURISTIC_HTML, "tour_name")
         record("destination", places.display, METHOD_HEURISTIC_HTML, "tour_name")
+
+    # Where the tour leaves from, read from the airport the page names rather
+    # than from a city it mostly does not. Silence stays silent: see
+    # :func:`~crawler.extraction.readers.places.find_origin` for why Tehran is
+    # not assumed.
+    if html:
+        record("origin", find_origin(main_text(html)), METHOD_HEURISTIC_HTML,
+               "departure_airport")
 
     image = _meta_content(tree, "og:image", "twitter:image")
     record("image_url", urljoin(base, image) if image else None, METHOD_HEURISTIC_HTML, "og:image")
