@@ -118,7 +118,10 @@ _ROOM_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"(?:نوزاد|اینفنت|انفانت)", ROOM_INFANT),
     (r"(?:سه|۳|3)" + _GAP + r"تخته", ROOM_TRIPLE),
     (r"(?:دو|۲|2)" + _GAP + r"تخته", ROOM_DOUBLE),
-    (r"(?:یک|۱|1)" + _GAP + r"تخته", ROOM_SINGLE),
+    # "تک تخته" and "تک نفره" are as common as "یک تخته": lachinseir writes
+    # only the first, and single_price sat at 0% on every page of it while the
+    # label was printed in plain sight.
+    (r"(?:یک|تک|۱|1)" + _GAP + r"(?:تخته|نفره)", ROOM_SINGLE),
     # The English words written in Persian letters, which is how a table names
     # its columns: tahagasht heads them "اتاق دبل" and "اتاق سینگل" rather than
     # "دو تخته". Kept after the counted forms so "دو تخته" still wins where
@@ -180,6 +183,8 @@ def detect_room_type(text: str) -> Optional[str]:
         'infant'
         >>> detect_room_type("زیر 12 سال با تخت")
         'child_with_bed'
+        >>> detect_room_type("تک تخته2,260دلار")
+        'single'
         >>> detect_room_type("رفت 03 شهریور 98,000,000 تومان") is None
         True
     """

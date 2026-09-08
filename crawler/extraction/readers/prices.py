@@ -67,8 +67,16 @@ CURRENCY_WORDS: dict[str, str] = {
 # An amount followed by a currency word. The amount accepts any digit script
 # and any of the groupers above; the currency word is required, which is what
 # separates a price from a phone number or a tour id.
+# A slash may group thousands too — tahagasht writes "9/990/000 تومان" — but a
+# slash also writes a date, and "1405/06/21" must never become a number. The
+# two are told apart by the groups: thousands are three digits each, a date's
+# month and day are two. Matched first, so the general shape below cannot take
+# the last group on its own and call 9/990/000 zero, which is what it did.
+_SLASH_GROUPED = re.compile(r"[\d۰-۹٠-٩]{1,3}(?:/[\d۰-۹٠-٩]{3})+")
+
 _PRICE_RE = re.compile(
-    r"(?P<amount>[\d۰-۹٠-٩][\d۰-۹٠-٩" + _GROUPERS + r".]*)"
+    r"(?P<amount>" + _SLASH_GROUPED.pattern + r"|"
+    r"[\d۰-۹٠-٩][\d۰-۹٠-٩" + _GROUPERS + r".]*)"
     r"\s*(?P<currency>" + "|".join(CURRENCY_WORDS) + r")"
 )
 
@@ -93,10 +101,16 @@ def parse_amount(text: str) -> Optional[float]:
         114690000.0
         >>> parse_amount("۲۱۹۰")
         2190.0
+        >>> parse_amount("9/990/000")
+        9990000.0
+        >>> parse_amount("1405/06/21") is None
+        True
         >>> parse_amount("سه میلیون") is None
         True
     """
     cleaned = normalize_digits(text).strip()
+    if _SLASH_GROUPED.fullmatch(cleaned):
+        cleaned = cleaned.replace("/", "")
     for grouper in _GROUPERS:
         cleaned = cleaned.replace(grouper, "")
     cleaned = cleaned.replace(" ", "").replace("‌", "")
