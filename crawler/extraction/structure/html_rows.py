@@ -108,6 +108,60 @@ def _signature(node: Node) -> str:
     return node.tag + "." + ".".join(classes[:_SIGNATURE_CLASSES])
 
 
+def _with_stragglers(members: list[Node], order: list[Node]) -> list[Node]:
+    """Take back the row a list drops at its edge for styling it differently.
+
+    The last item of a list is routinely given fewer classes than the rest —
+    it carries no divider, because there is nothing after it to divide from.
+    That is ordinary CSS and it is invisible on the page, but it changes the
+    signature, so the row falls outside its own group and is never read.
+    lachinseir.com sells four rooms and gave three: the fourth, "کودک بدون تخت
+    1,400 دلار", differs from its siblings by exactly ``border-l-2
+    border-dashed``.
+
+    Taken back only where all four hold: the same tag, a class in common, a
+    price of its own, and a place directly beside the run. Adjacency is what
+    keeps this tight — a neighbour further along is a different section, and
+    absorbing it would put someone else's price in this block.
+
+    Example:
+        >>> tree = HTMLParser(
+        ...     '<ul><li class="row line">دو تخته 92,000,000 تومان</li>'
+        ...     '<li class="row line">یک تخته 99,000,000 تومان</li>'
+        ...     '<li class="row">کودک 45,000,000 تومان</li></ul>')
+        >>> len(find_row_containers(tree)[0].members)
+        3
+    """
+    if not members:
+        return members
+    mine = {id(node) for node in members}
+    places = [i for i, node in enumerate(order) if id(node) in mine]
+    first, last = places[0], places[-1]
+    tag = members[0].tag
+    shared = {
+        cls
+        for cls in (members[0].attributes.get("class") or "").split()
+        if not _GENERATED_CLASS.search(cls)
+    }
+
+    taken = list(members)
+    for step in (first - 1, last + 1):
+        if not 0 <= step < len(order):
+            continue
+        node = order[step]
+        if id(node) in mine or node.tag != tag:
+            continue
+        classes = set((node.attributes.get("class") or "").split())
+        if not classes & shared:
+            continue
+        if not find_prices(node.text(deep=True) or ""):
+            continue
+        taken.append(node)
+
+    taken.sort(key=lambda node: order.index(node))
+    return taken
+
+
 def _element_path(node: Node, max_depth: int = 4) -> str:
     """Build a readable path from an ancestor down to ``node``.
 
@@ -358,15 +412,18 @@ def find_row_containers(
             continue
 
         groups: dict[str, list[Node]] = defaultdict(list)
+        order: list[Node] = []
         child = parent.child
         while child is not None:
             if child.tag not in _SKIP_TAGS:
                 groups[_signature(child)].append(child)
+                order.append(child)
             child = child.next
 
         for signature, members in groups.items():
             if len(members) < _MIN_MEMBERS:
                 continue
+            members = _with_stragglers(members, order)
             with_price = sum(
                 1 for node in members if find_prices(node.text(deep=True) or "")
             )
