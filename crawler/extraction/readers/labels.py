@@ -135,6 +135,17 @@ _BOARD_RE = re.compile(
     re.I,
 )
 
+# The same plans written out in Persian. Read because a site that spells the
+# plan never prints the code beside it: tahagasht writes "بدون پذیرایی" and
+# nothing else, which left board_type empty and, worse, read as a hotel name.
+_BOARD_WORDS: tuple[tuple[re.Pattern, str], ...] = (
+    (re.compile(r"بدون" + _GAP + r"(?:پذیرایی|وعده|صبحانه)"), "RO"),
+    (re.compile(r"تمام" + _GAP + r"پانسیون|فول" + _GAP + r"بورد"), "FB"),
+    (re.compile(r"نیم" + _GAP + r"پانسیون"), "HB"),
+    (re.compile(r"همه" + _GAP + r"چیز" + _GAP + r"شامل|آل" + _GAP + r"اینکلوسیو"), "ALL"),
+    (re.compile(r"صبحانه"), "BB"),
+)
+
 
 def detect_room_type(text: str) -> Optional[str]:
     """Read which occupancy a row is priced for.
@@ -218,10 +229,17 @@ def detect_board_type(text: str) -> Optional[str]:
         'BB'
         >>> detect_board_type("خدمات:HB")
         'HB'
+        >>> detect_board_type("بدون پذیرایی")
+        'RO'
+        >>> detect_board_type("نیم پانسیون")
+        'HB'
         >>> detect_board_type("هتل کورت") is None
         True
     """
     match = _BOARD_RE.search(text)
-    if not match:
-        return None
-    return match.group(1).replace(".", "").upper()
+    if match:
+        return match.group(1).replace(".", "").upper()
+    for pattern, value in _BOARD_WORDS:
+        if pattern.search(text):
+            return value
+    return None
