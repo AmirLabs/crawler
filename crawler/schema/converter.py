@@ -264,6 +264,29 @@ def _group_key(row: ExtractedRow) -> tuple[Optional[str], Optional[str]]:
     return date_key, _value(row.fields, "hotel_name")
 
 
+def _impossible(departure: TourDate, ret: TourDate) -> bool:
+    """Whether a stated return cannot belong to the departure beside it.
+
+    A tour that comes home on the day it leaves, or before, is not a tour. It
+    happens where a page sells several departures and one return is printed
+    once: radingasht gave "9 شهریور → 9 شهریور" for a six-night tour on 25 rows.
+    Those are dropped and counted from the night count instead.
+
+    A return that merely disagrees with the night count is left alone. The page
+    stated it, the count may be what is wrong, and which of the two to believe
+    is not this function's call — issue #2 measures it.
+
+    Example:
+        >>> _impossible(TourDate(iso="2026-09-01"), TourDate(iso="2026-09-01"))
+        True
+        >>> _impossible(TourDate(iso="2026-09-01"), TourDate(iso="2026-09-08"))
+        False
+        >>> _impossible(TourDate(), TourDate(iso="2026-09-08"))
+        False
+    """
+    return bool(departure.iso and ret.iso and ret.iso <= departure.iso)
+
+
 def _return_from_nights(departure: TourDate, nights: Optional[int]) -> Optional[TourDate]:
     """The day a tour comes home, when the page said only how long it is.
 
@@ -340,6 +363,8 @@ def _build_offer(
     )
     if not ret.iso and not ret.raw:
         ret = _return_from_nights(departure, nights) or ret
+    elif _impossible(departure, ret):
+        ret = _return_from_nights(departure, nights) or TourDate()
 
     stays = _value(first, "hotels")
     if isinstance(stays, list) and stays:
