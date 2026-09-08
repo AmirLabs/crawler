@@ -51,6 +51,9 @@ AIRLINES: tuple[str, ...] = (
     "ایران ایرتور", "معراج ایر", "کیش ایر", "قشم ایر", "پویا ایر", "ایران ایر",
     "ایرتور", "سپهران", "کاسپین", "ماهان", "معراج", "زاگرس", "وارش", "کارون",
     "تابان", "آسمان", "سپاهان", "چابهار", "اطلس", "آتا", "ترکیش", "قطری",
+    # Met while reading the flight blocks, and worth having here too: a carrier
+    # left in a title reads as a place. lachinseir sells "تور ... سلام ایر".
+    "سلام ایر", "اطلس ایر", "وارش ایر", "قشم ایرلاین",
 )
 
 FILLER: tuple[str, ...] = (

@@ -33,6 +33,11 @@ from typing import Optional
 from selectolax.parser import HTMLParser
 
 from crawler.extraction.readers.labels import names_other_tours
+from crawler.extraction.readers.places import (
+    AIRLINES,
+    _AIRPORT_MARKER,
+    _MAX_FLIGHT_CHARS,
+)
 from crawler.schema.output_models import (
     TRANSPORT_AIR,
     TRANSPORT_BUS,
@@ -156,6 +161,25 @@ _LABEL_WINDOW = 30
 
 # A labelled airline is an answer in itself: only flights have one.
 _AIRLINE_LABELS = ("ایرلاین:", "ایرلاین :", "هواپیمایی:", "شرکت هواپیمایی")
+
+# The airlines we already know by name, longest first so "ایران ایرتور" is not
+# read as the "ایران ایر" inside it. The list is the same one titles are
+# cleaned against: an airline is an airline wherever it is printed.
+_KNOWN_AIRLINE = re.compile(
+    "|".join(re.escape(name) for name in sorted(AIRLINES, key=len, reverse=True))
+)
+
+# One the list does not know yet, taken from behind its label. Persian carriers
+# are almost all "<word> ایر", and the trailing "ایر" is where the name ends —
+# which matters because nahalgasht runs it into the next word: "اطلس
+# ایراقامت هتل" is اطلس ایر followed by اقامت, with no space between them.
+# The "ایر" a known name may be missing, straight after it, glued or spaced.
+_TRAILING_AIR = re.compile(r"[\s‌]*(ایرتور|ایر)")
+
+_AIRLINE_AFTER_LABEL = re.compile(
+    r"(?:هواپیمایی|ایرلاین)[\s‌]*[:：]?[\s‌]*"
+    r"([آ-ی][آ-ی‌]{1,12}?)[\s‌]*(ایرتور|ایر)"
+)
 
 # Words that describe the journey. "پرواز" is deliberately absent: it appears
 # in "هزینه پرواز" and "بلیت پرواز" on pages for trains and coaches too, while
@@ -286,3 +310,103 @@ def detect_transport(html: str, tour_name: Optional[str] = None) -> tuple[Option
         return found, "journey"
 
     return None, "none"
+
+
+def find_airline(text: str) -> Optional[str]:
+    """Which carrier a tour flies with, where the page names one.
+
+    The known names are tried first because they end where the list says they
+    end. A label is the fallback, and it is needed: lachinseir flies "سلام ایر",
+    which no list had, and reading it off "هواپیمایی سلام ایر" costs nothing.
+
+    Returns ``None`` for a page that names no carrier. bisanseir says only
+    "باپرواز بوئینگ 737", which is the aircraft and not the airline, and a tour
+    is not sold on the model of the plane.
+
+    Example:
+        >>> find_airline("پرواز رفت و برگشت با هواپیمایی اطلس ایراقامت هتل")
+        'اطلس ایر'
+        >>> find_airline("بلیط رفت و برگشت با هواپیمایی سلام ایر ، 11 شب")
+        'سلام ایر'
+        >>> find_airline("تور استانبول با پرواز ایران ایرتور")
+        'ایران ایرتور'
+        >>> find_airline("بلیط رفت وبرگشت باپرواز بوئینگ 737") is None
+        True
+    """
+    known = _KNOWN_AIRLINE.search(text)
+    if known:
+        # The list holds some carriers by their short name. Where the page
+        # writes the longer one, the page is right: nahalgasht flies "اطلس ایر"
+        # and the list only ever knew "اطلس".
+        after = _TRAILING_AIR.match(text[known.end():])
+        return known.group(0) + (f" {after.group(1)}" if after else "")
+    labelled = _AIRLINE_AFTER_LABEL.search(text)
+    if labelled:
+        return f"{labelled.group(1).strip()} {labelled.group(2)}"
+    return None
+
+
+# "ساعت پرواز : 00:30" and "ساعت : 22:00". The label is what separates a
+# departure from the dozen other clock times a page carries — a check-in time,
+# an opening hour, a duration written the same way.
+_LABELLED_TIME = re.compile(
+    r"ساعت[\s‌]*(?:پرواز|حرکت|رفت)?[\s‌]*[:：][\s‌]*([0-2]?\d:[0-5]\d)"
+)
+
+# A clock time standing on its own in an element, which is how a flight table
+# prints it beside the city: <b>16:45</b><p>تهران (IKA)</p>.
+_BARE_TIME = re.compile(r"^([0-2]?\d:[0-5]\d)$")
+
+
+def find_flight_times(html: str) -> tuple[Optional[str], Optional[str]]:
+    """When the tour flies out and when it flies back, as the page prints them.
+
+    The outward leg is printed first on every site measured, so the first two
+    labelled times are the two legs in order. chakavaktravel writes them in
+    pairs — the city it leaves from carries the baggage and the class, the city
+    it lands at carries the time — so the time belongs to the leg and not to
+    the city beside it, and reading it off the city would swap the two.
+
+    Falls back to the markup for a table that labels nothing: tahagasht puts a
+    bare "16:45" in the element before the one naming the city. That path gives
+    the departure only. The table prints four times — leaves, lands, leaves,
+    lands — and nothing in the markup says which is which, so guessing the
+    return would have made 18:40, the hour the plane reaches باکو, the hour the
+    tour comes home.
+
+    Example:
+        >>> find_flight_times('<body><p>ساعت پرواز : 00:30</p>'
+        ...                   '<p>ساعت پرواز : 04:45</p></body>')
+        ('00:30', '04:45')
+        >>> find_flight_times('<body><div><b>16:45</b><p>تهران (IKA)</p></div>'
+        ...                   '<div><b>18:40</b><p>باکو (GYD)</p></div></body>')
+        ('16:45', None)
+        >>> find_flight_times("<body><p>ترانسفر فرودگاهی</p></body>")
+        (None, None)
+    """
+    labelled = _LABELLED_TIME.findall(main_text(html))
+    if labelled:
+        return labelled[0], (labelled[1] if len(labelled) > 1 else None)
+
+    tree = HTMLParser(html)
+    for node in tree.css("script, style, noscript"):
+        node.decompose()
+
+    found: list[str] = []
+    for node in tree.css("*"):
+        own = " ".join((node.text(deep=False) or "").split())
+        if not own or len(own) > _MAX_FLIGHT_CHARS:
+            continue
+        if not _AIRPORT_MARKER.search(own):
+            continue
+        parent = node.parent
+        if parent is None:
+            continue
+        for sibling in parent.iter():
+            clock = _BARE_TIME.match(" ".join((sibling.text(deep=True) or "").split()))
+            if clock and clock.group(1) not in found:
+                found.append(clock.group(1))
+                break
+        if found:
+            break
+    return (found[0] if found else None, None)

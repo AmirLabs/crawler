@@ -49,7 +49,11 @@ from crawler.extraction.readers.dates import (
 )
 from crawler.extraction.readers.labels import _GAP, _ZWNJ, detect_nights, detect_star_rating
 from crawler.extraction.target_fields import ROW_FIELDS, unresolved
-from crawler.extraction.readers.transport import main_text
+from crawler.extraction.readers.transport import (
+    find_airline,
+    find_flight_times,
+    main_text,
+)
 from crawler.extraction.structure.hotel_block import (
     _HOTEL_WORDS,
     _clean,
@@ -155,6 +159,12 @@ class PageFacts:
     hotel_names: list[str] = field(default_factory=list)
     nights: Optional[int] = None
     star_rating: Optional[int] = None
+    # Who flies the tour and at what hour, read once from the flight block. The
+    # client's second schema asks for both by name — vehicle_name and
+    # exit_hours — and neither was read anywhere before.
+    airline: Optional[str] = None
+    departure_time: Optional[str] = None
+    return_time: Optional[str] = None
     # ``False`` when the page says the flight is charged on top, ``None`` when
     # it says nothing. Never ``True`` by inference: silence is not a promise.
     flight_included: Optional[bool] = None
@@ -603,11 +613,13 @@ def apply_page_facts(rows: list, facts: PageFacts) -> tuple[list, int]:
     for row, mine in paired:
         stated = facts.return_ if mine is first else None
         for name, value in (
-            ("departure_date", _date_value(mine)),
-            ("return_date", _date_value(stated or _derive_return(mine, facts.nights))),
+            ("departure_date", _date_value(mine, facts.departure_time)),
+            ("return_date", _date_value(stated or _derive_return(mine, facts.nights),
+                                        facts.return_time)),
             ("hotel_name", facts.hotels),
             ("nights", facts.nights),
             ("hotel_star_rating", facts.star_rating),
+            ("transport_name", facts.airline),
         ):
             if value is None or name in row.fields:
                 continue
@@ -626,18 +638,25 @@ def apply_page_facts(rows: list, facts: PageFacts) -> tuple[list, int]:
     return rows, filled
 
 
-def _date_value(parsed: Optional[DateText]) -> Optional[dict]:
+def _date_value(parsed: Optional[DateText], clock: Optional[str] = None) -> Optional[dict]:
     """One page-level date in the shape a row's date field uses.
+
+    ``clock`` is the hour the flight block gave, used only where the date did
+    not carry one of its own. The two are printed apart on these pages — the
+    date beside the month, the hour beside the airport — and the schema wants
+    them together.
 
     Example:
         >>> _date_value(find_dates("06 شهریور")[0])
         {'iso': '2026-08-28', 'raw': '06 شهریور', 'time': None}
+        >>> _date_value(find_dates("06 شهریور")[0], "22:00")["time"]
+        '22:00'
         >>> _date_value(None) is None
         True
     """
     if parsed is None:
         return None
-    return {"iso": to_iso(parsed), "raw": parsed.raw, "time": parsed.time}
+    return {"iso": to_iso(parsed), "raw": parsed.raw, "time": parsed.time or clock}
 
 
 def _derive_return(
@@ -695,7 +714,11 @@ def read_page_facts(html: str) -> PageFacts:
     if returning is None:
         returning = _derive_return(departures[0] if departures else None, nights)
 
+    out_time, back_time = find_flight_times(html)
     return PageFacts(
+        airline=find_airline(text),
+        departure_time=out_time,
+        return_time=back_time,
         departures=departures,
         return_=returning,
         hotel_names=read_hotels(html),
