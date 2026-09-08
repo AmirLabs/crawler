@@ -38,6 +38,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from crawler.extraction.readers.places import is_a_departure_city
 from crawler.extraction.models import (
     METHOD_EXACT_KEY,
     ExtractedField,
@@ -187,7 +188,16 @@ def _price_value(entry: dict) -> Optional[dict]:
 
 
 def _legs(data: dict) -> tuple[Optional[dict], Optional[dict]]:
-    """The outbound and return journeys, in the order the platform lists them.
+    """The journey out of Iran and the one back, whatever order they are listed.
+
+    Not simply the first and the second. radingasht's Antalya tour lists four
+    legs and the first is a coach from اسپارتا to آنتالیا, a transfer inside the
+    destination — taking it made the tour leave from اسپارتا by bus on a date
+    six weeks before it sells. The leg that starts at an Iranian airport is the
+    one the tour departs on, and the leg that ends at one is the way home.
+
+    Falls back to the listed order where no leg names a place the table knows,
+    which is what a tour between two foreign cities looks like.
 
     Example:
         >>> out, back = _legs({"transportation": [
@@ -195,9 +205,28 @@ def _legs(data: dict) -> tuple[Optional[dict], Optional[dict]]:
         ...     {"departDateTime": "2026-08-28T14:00:00"}]})
         >>> out["departDateTime"], back["departDateTime"]
         ('2026-08-21T13:55:00', '2026-08-28T14:00:00')
+        >>> out, back = _legs({"transportation": [
+        ...     {"origin": {"city": "اسپارتا"}, "destination": {"city": "آنتالیا"}},
+        ...     {"origin": {"city": "تهران"}, "destination": {"city": "آنتالیا"}},
+        ...     {"origin": {"city": "آنتالیا"}, "destination": {"city": "تهران"}}]})
+        >>> out["origin"]["city"], back["destination"]["city"]
+        ('تهران', 'تهران')
     """
     legs = [t for t in (data.get("transportation") or []) if isinstance(t, dict)]
-    return (legs[0] if legs else None, legs[1] if len(legs) > 1 else None)
+    if not legs:
+        return None, None
+
+    def city(leg: dict, end: str) -> str:
+        return ((leg.get(end) or {}).get("city") or "").strip()
+
+    leaving = next((leg for leg in legs if is_a_departure_city(city(leg, "origin"))), None)
+    coming = next(
+        (leg for leg in reversed(legs)
+         if is_a_departure_city(city(leg, "destination"))), None
+    )
+    if leaving is None and coming is None:
+        return legs[0], legs[1] if len(legs) > 1 else None
+    return leaving or legs[0], coming or (legs[-1] if len(legs) > 1 else None)
 
 
 def _rows_from_bundles(data: dict) -> list[ExtractedRow]:
@@ -293,6 +322,39 @@ def _stay(accommodation: dict) -> dict:
         "board_type": board,
         "nights": int(stay) if isinstance(stay, (int, float)) else None,
     }
+
+
+def _stamp_transport(rows: list[ExtractedRow], outbound: Optional[dict]) -> None:
+    """Give every row the carrier and the flight time the API already stated.
+
+    These are row fields because a page can sell several departures, but the
+    API states them once for the journey, so they are stamped rather than read
+    per row. Both sat at 0% on all ten sites while three of them published the
+    answer: the carrier's Persian name and the leg's duration were simply never
+    taken out of the JSON.
+
+    Example:
+        >>> rows = [ExtractedRow()]
+        >>> _stamp_transport(rows, {"travelDuration": "03:00",
+        ...     "carrierInfo": {"persianName": "کاسپین "}})
+        >>> rows[0].fields["transport_name"].value
+        'کاسپین'
+        >>> rows[0].fields["transport_duration"].value
+        '03:00'
+    """
+    if not outbound:
+        return
+    carrier = ((outbound.get("carrierInfo") or {}).get("persianName") or "").strip()
+    duration = (outbound.get("travelDuration") or "").strip()
+    for row in rows:
+        for name, value, source in (
+            ("transport_name", carrier, "transportation[].carrierInfo.persianName"),
+            ("transport_duration", duration, "transportation[].travelDuration"),
+        ):
+            if value and name not in row.fields:
+                row.fields[name] = ExtractedField(value, METHOD_EXACT_KEY, source)
+                row.attempts.pop(name, None)
+        row.unresolved_fields = unresolved(row.fields, ROW_FIELDS)
 
 
 def enrich_from_api(page: ExtractedPage, data: dict) -> ExtractedPage:
