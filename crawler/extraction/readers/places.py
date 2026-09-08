@@ -195,3 +195,82 @@ def read_title_places(title: str) -> TourPlaces:
             return TourPlaces(destinations=inside)
 
     return TourPlaces(destinations=_split(_strip_noise(title)))
+
+
+# The airports a tour can leave Iran from, and the city each one serves. A
+# closed table of facts about the country, not a rule about any site: the seven
+# cities below are every one of these agencies' departure points, and a table
+# keyed on them keeps working when a site redraws its pages.
+#
+# It is here because a page names the airport far more often than the city.
+# nahalgasht writes "پرواز از فرودگاه مهرآباد" and never says Tehran; vanrosh
+# and tahagasht write the IATA code beside the city; chakavaktravel prints the
+# city and the airport back to back. One table reads all four.
+_IRANIAN_AIRPORTS: dict[str, str] = {
+    "امام خمینی": "تهران",
+    "مهرآباد": "تهران",
+    "IKA": "تهران",
+    "THR": "تهران",
+    "مشهد": "مشهد",
+    "MHD": "مشهد",
+    "شیراز": "شیراز",
+    "SYZ": "شیراز",
+    "اصفهان": "اصفهان",
+    "IFN": "اصفهان",
+    "تبریز": "تبریز",
+    "TBZ": "تبریز",
+    "کیش": "کیش",
+    "KIH": "کیش",
+}
+
+_ORIGIN_CITIES = "|".join(
+    sorted(set(_IRANIAN_AIRPORTS.values()), key=len, reverse=True)
+)
+_GAP_ = r"[\s‌]*"
+
+# The airport is the one the tour leaves from when the page says so in one of
+# three ways. Naming it anywhere on the page is not enough: lachinseir offers
+# "خدمات رایگان CIP فرودگاه امام خمینی", which is a lounge and not a departure,
+# and reading that as the origin would put a city on a page that never stated
+# one.
+_LEAVES_FROM = re.compile(r"از" + _GAP_ + r"(?:فرودگاه" + _GAP_ + r")?$")
+_BESIDE_CITY = re.compile(
+    r"(?:" + _ORIGIN_CITIES + r")" + _GAP_
+    + r"(?:فرودگاه" + _GAP_ + r")?(?:بین" + _GAP_ + r"المللی" + _GAP_ + r")?$"
+)
+_AIRPORT_CODE = re.compile(r"\(?\b(?:IKA|THR|MHD|SYZ|IFN|TBZ|KIH)\b\)?")
+
+# How much text on either side of the airport is read to judge it. Wide enough
+# for "تهران , فرودگاه بین‌المللی امام خمینی", narrow enough that the sentence
+# before it is somebody else's.
+_ORIGIN_WINDOW = 30
+
+
+def find_origin(text: str) -> Optional[str]:
+    """The city a tour leaves from, where the page says which airport it uses.
+
+    Returns ``None`` rather than Tehran when the page is silent. Most of these
+    tours do leave Tehran, but a default would be invisible in the fill rate
+    and wrong the day an agency sells a Mashhad departure.
+
+    Example:
+        >>> find_origin("پرواز از فرودگاه مهرآباد میباشد.")
+        'تهران'
+        >>> find_origin("تهران , فرودگاه بین‌المللی امام خمینی IKA مدت پرواز")
+        'تهران'
+        >>> find_origin("همراه با خدمات رایگان CIP فرودگاه امام خمینی") is None
+        True
+        >>> find_origin("ترانسفر فرودگاهی و بیمه مسافرتی") is None
+        True
+    """
+    for airport, city in _IRANIAN_AIRPORTS.items():
+        for match in re.finditer(re.escape(airport), text):
+            before = text[max(0, match.start() - _ORIGIN_WINDOW): match.start()]
+            after = text[match.end(): match.end() + 14]
+            if _LEAVES_FROM.search(before):
+                return city
+            if _AIRPORT_CODE.search(after) or _AIRPORT_CODE.search(before[-8:]):
+                return city
+            if _BESIDE_CITY.search(before):
+                return city
+    return None
