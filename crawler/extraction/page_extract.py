@@ -70,7 +70,15 @@ from crawler.extraction.tour_api import (
     fetch_tour_json,
 )
 from crawler.extraction.readers.dates import jalali_to_gregorian
-from crawler.extraction.readers.places import find_origin, read_title_places
+from crawler.extraction.readers.places import (
+    find_destination,
+    find_origin,
+    is_a_departure_city,
+    read_flight_legs,
+    read_title_places,
+    without_a_hotel_word,
+    without_the_hotel,
+)
 from crawler.extraction.readers.transport import detect_transport, main_text
 from crawler.extraction.target_fields import PAGE_FIELDS, ROW_FIELDS, unresolved
 from crawler.profiler.models import SiteProfile
@@ -200,16 +208,47 @@ def read_page_fields(
     # model pass in :mod:`crawler.llm.tour_names` now only sees what is left.
     title = fields["tour_name"].value if "tour_name" in fields else None
     places = read_title_places(title) if isinstance(title, str) else None
+    # Where the page prints a flight, it names the city itself, and that beats a
+    # name recovered by subtracting noise from a title. The title still wins
+    # when it already contains that city, because a two-city tour says both in
+    # its title and the flight box names only where the plane lands: vanrosh
+    # sells "چشمه و ازمیر" and flies to ازمیر alone.
+    words = main_text(html) if html else ""
+    flown = find_destination(html) if html else None
     if places is not None and places.destinations:
-        record("destinations", places.destinations, METHOD_HEURISTIC_HTML, "tour_name")
-        record("destination", places.display, METHOD_HEURISTIC_HTML, "tour_name")
+        if flown and flown not in places.destinations:
+            record("destinations", [flown], METHOD_HEURISTIC_HTML, "flight_block")
+            record("destination", flown, METHOD_HEURISTIC_HTML, "flight_block")
+        else:
+            record("destinations", places.destinations, METHOD_HEURISTIC_HTML, "tour_name")
+            record("destination", places.display, METHOD_HEURISTIC_HTML, "tour_name")
+    elif flown:
+        record("destinations", [flown], METHOD_HEURISTIC_HTML, "flight_block")
+        record("destination", flown, METHOD_HEURISTIC_HTML, "flight_block")
+
+    # The stops a multi-city tour flies between are added to the searchable
+    # list, never to the display name. ``destinations`` exists so a tour can be
+    # found by any one of its stops — see ``Tour.to_rows`` — and lachinseir's
+    # "تور دور آسیا ویژه نوروز" names none of its three, while its own text
+    # lists them leg by leg.
+    legs = [
+        city for city in read_flight_legs(words)
+        if not is_a_departure_city(city)
+    ]
+    if legs and "destinations" in fields:
+        known = list(fields["destinations"].value)
+        fields["destinations"] = ExtractedField(
+            value=known + [city for city in legs if city not in known],
+            method=METHOD_HEURISTIC_HTML,
+            source_key=f"{fields['destinations'].source_key}+flight_legs",
+        )
 
     # Where the tour leaves from, read from the airport the page names rather
     # than from a city it mostly does not. Silence stays silent: see
     # :func:`~crawler.extraction.readers.places.find_origin` for why Tehran is
     # not assumed.
     if html:
-        record("origin", find_origin(main_text(html)), METHOD_HEURISTIC_HTML,
+        record("origin", find_origin(words), METHOD_HEURISTIC_HTML,
                "departure_airport")
 
     image = _meta_content(tree, "og:image", "twitter:image")
@@ -319,6 +358,7 @@ def extract_page_from_html(
     before = len(rows)
     rows, added = apply_page_facts(rows, facts)
     page.rows, page.expired_rows = split_by_availability(rows, today)
+    _drop_the_hotel_from_destination(page)
     if added:
         page.notes.append(f"filled {added} fields from facts stated once for the page")
     if len(rows) != before:
@@ -342,6 +382,62 @@ def extract_page_from_html(
             else "nothing left to sell and the page gives no reason"
         )
     return page
+
+
+def _drop_the_hotel_from_destination(page: ExtractedPage) -> None:
+    """Take the hotel's name back out of a destination read from the title.
+
+    Some titles name the hotel as well as the place — nahalgasht sells "تور
+    زمینی تبریز هتل گسترش" — and subtracting noise cannot know which words
+    belong to a hotel, because hotels are named after everything. It does not
+    have to: the page states the hotel in its own rows, and by the time they
+    are built the name is in hand.
+
+    Only a destination read from the title is touched. One read from the flight
+    box came from the page saying the city itself and has no hotel in it.
+
+    Example:
+        >>> page = ExtractedPage(url="u")
+        >>> page.page_fields["destination"] = ExtractedField(
+        ...     "زمینی تبریز هتل گسترش", METHOD_HEURISTIC_HTML, "tour_name")
+        >>> page.rows = [ExtractedRow(fields={"hotel_name": ExtractedField(
+        ...     "هتل گسترش", METHOD_HEURISTIC_HTML, "hotel_block")})]
+        >>> _drop_the_hotel_from_destination(page)
+        >>> page.page_fields["destination"].value
+        'تبریز'
+        >>> page.page_fields["destinations"].value
+        ['تبریز']
+    """
+    field = page.page_fields.get("destination")
+    if field is None or not isinstance(field.value, str):
+        return
+    if not (field.source_key or "").endswith("tour_name"):
+        return
+
+    left = without_a_hotel_word(field.value) or field.value
+    for row in page.rows + page.expired_rows:
+        hotel = row.fields.get("hotel_name")
+        if hotel is not None and isinstance(hotel.value, str):
+            left = without_the_hotel(left, hotel.value) or left
+    if left == field.value:
+        return
+
+    # Read again, now that the hotel is out of the way. What the hotel's name
+    # was hiding is ordinary noise — "تور زمینی تبریز هتل گسترش" leaves
+    # "زمینی تبریز", and زمینی is how the tour travels, not where it goes.
+    cleaned = read_title_places(left)
+    places = cleaned.destinations or [left]
+    page.page_fields["destination"] = ExtractedField(
+        cleaned.display or left, field.method, f"{field.source_key}-hotel_name"
+    )
+    listed = page.page_fields.get("destinations")
+    extra = [] if listed is None or not isinstance(listed.value, list) else [
+        place for place in listed.value if place not in field.value
+    ]
+    page.page_fields["destinations"] = ExtractedField(
+        places + [place for place in extra if place not in places],
+        field.method, f"{field.source_key}-hotel_name",
+    )
 
 
 async def extract_page(

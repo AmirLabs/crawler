@@ -35,6 +35,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
+from selectolax.parser import HTMLParser
+
 from crawler.extraction.readers.prices import normalize_digits
 
 
@@ -53,6 +55,11 @@ AIRLINES: tuple[str, ...] = (
 
 FILLER: tuple[str, ...] = (
     "با پرواز", "پرواز", "نمایشگاه", "ویژه", "روزه", "تور", "شب", "روز", "ماه", "با",
+    # How the tour travels, which the title states as readily as where it goes:
+    # "تور زمینی تبریز هتل گسترش" gave the destination "زمینی تبریز هتل گسترش".
+    # A closed vocabulary like the airlines, and the fact itself is already read
+    # into transportation_type, so nothing is lost by taking it out here.
+    "هوایی", "زمینی", "قطار", "اتوبوس", "کشتی",
 )
 
 _SEPARATOR = re.compile(r"[,\.،؛/\\+\-–—:]+")
@@ -94,6 +101,10 @@ class TourPlaces:
         return " + ".join(self.destinations) if self.destinations else None
 
 
+_WHOLE_WORD = r"(?<![\w؀-ۿ]){word}(?![\w؀-ۿ])"
+_A_MONTH = r"(?<![\w؀-ۿ]){month}(?:\s*ماه)?(?![\w؀-ۿ])"
+
+
 def _strip_noise(text: str) -> str:
     """Take the four noise vocabularies out, leaving separators as markers.
 
@@ -106,19 +117,28 @@ def _strip_noise(text: str) -> str:
         'ازمیر'
         >>> _strip_noise("تور بالی + اوبود 7 شب")
         'بالی§اوبود'
+        >>> _strip_noise("تور ترکیه استانبول 4 روزه از مهرآباد")
+        'ترکیه استانبول'
+        >>> _strip_noise("تور ازمیر ویژه مهرماه")
+        'ازمیر'
     """
-    out = normalize_digits(text)
+    out = normalize_digits(strip_leaving_clause(text))
     out = re.sub(r"[A-Za-z]+", " ", out)          # "(VIP Tour)"
     out = re.sub(r"\d+", " ", out)
     out = _SEPARATOR.sub(_MARK, out)
     out = re.sub(r"[()\[\]|]", " ", out)
 
+    # Every vocabulary is taken out on word boundaries. Without them a month
+    # name is removed from inside a word: "از مهرآباد" became "از آباد", and
+    # nahalgasht's destination read "ترکیه استانبول از آباد". A month may still
+    # carry "ماه" behind it, glued or spaced, because that is how these titles
+    # write it — "مهرماه" goes whole, "مهرآباد" is left alone.
     for word in sorted(AIRLINES, key=len, reverse=True):
-        out = re.sub(re.escape(word), " ", out)
+        out = re.sub(_WHOLE_WORD.format(word=re.escape(word)), " ", out)
     for month in MONTHS:
-        out = re.sub(month, " ", out)
+        out = re.sub(_A_MONTH.format(month=month), " ", out)
     for season in SEASONS:
-        out = re.sub(season, " ", out)
+        out = re.sub(_WHOLE_WORD.format(word=season), " ", out)
     for word in sorted(FILLER, key=len, reverse=True):
         out = re.sub(rf"(?<![\w؀-ۿ]){re.escape(word)}(?![\w؀-ۿ])",
                      " ", out)
@@ -221,6 +241,39 @@ _IRANIAN_AIRPORTS: dict[str, str] = {
     "TBZ": "تبریز",
     "کیش": "کیش",
     "KIH": "کیش",
+    # The rest of the country's airports. Added after a run read nahalgasht's
+    # "تور هوایی مشهد از اهواز" as a destination of "مشهد از اهواز": the clause
+    # is only taken off a title where the place in it is known to be a place a
+    # tour leaves from, and the six cities above were not the whole list.
+    "اهواز": "اهواز",
+    "AWZ": "اهواز",
+    "کرمان": "کرمان",
+    "KER": "کرمان",
+    "رشت": "رشت",
+    "RAS": "رشت",
+    "ارومیه": "ارومیه",
+    "OMH": "ارومیه",
+    "بندرعباس": "بندرعباس",
+    "BND": "بندرعباس",
+    "یزد": "یزد",
+    "AZD": "یزد",
+    "کرمانشاه": "کرمانشاه",
+    "KSH": "کرمانشاه",
+    "ساری": "ساری",
+    "SRY": "ساری",
+    "قشم": "قشم",
+    "GSM": "قشم",
+    "اردبیل": "اردبیل",
+    "ADU": "اردبیل",
+    "همدان": "همدان",
+    "HDM": "همدان",
+    "بوشهر": "بوشهر",
+    "BUZ": "بوشهر",
+    "زاهدان": "زاهدان",
+    "ZAH": "زاهدان",
+    "کرج": "کرج",
+    "قم": "قم",
+    "اصفهان ": "اصفهان",
 }
 
 _ORIGIN_CITIES = "|".join(
@@ -244,6 +297,22 @@ _AIRPORT_CODE = re.compile(r"\(?\b(?:IKA|THR|MHD|SYZ|IFN|TBZ|KIH)\b\)?")
 # for "تهران , فرودگاه بین‌المللی امام خمینی", narrow enough that the sentence
 # before it is somebody else's.
 _ORIGIN_WINDOW = 30
+
+
+_DEPARTURE_CITIES = frozenset(_IRANIAN_AIRPORTS.values())
+
+
+def is_a_departure_city(name: str) -> bool:
+    """Whether a place is one of the cities these tours leave Iran from.
+
+    Public because the destination rules need the same answer the origin rule
+    does — a leg that starts at home is not where the tour goes.
+
+    Example:
+        >>> is_a_departure_city("تهران"), is_a_departure_city("بانکوک")
+        (True, False)
+    """
+    return name in _DEPARTURE_CITIES
 
 
 def find_origin(text: str) -> Optional[str]:
@@ -274,3 +343,286 @@ def find_origin(text: str) -> Optional[str]:
             if _BESIDE_CITY.search(before):
                 return city
     return None
+
+
+# "تور استانبول از مهرآباد" names where the tour goes and where it leaves from,
+# and only the first is the destination. Built from the table above, so it
+# covers the airport and the city alike and grows with it. Anchored on "از" and
+# on a word boundary: a place whose own name begins with one of these words is
+# not an origin clause.
+_LEAVING_CLAUSE = re.compile(
+    r"(?<![\w؀-ۿ])از[\s‌]*(?:فرودگاه[\s‌]*)?(?:"
+    + "|".join(
+        sorted(
+            {re.escape(k) for k in _IRANIAN_AIRPORTS}
+            | {re.escape(v) for v in _IRANIAN_AIRPORTS.values()},
+            key=len,
+            reverse=True,
+        )
+    )
+    + r")(?![\w؀-ۿ])"
+)
+
+
+def strip_leaving_clause(title: str) -> str:
+    """A title with the "from <Iranian airport>" part taken off.
+
+    That clause says where the tour starts, and leaving it in put the airport
+    in the destination: nahalgasht sells "تور ترکیه استانبول 4 روزه از مهرآباد"
+    and the destination read "ترکیه استانبول از مهرآباد".
+
+    Only the places the origin table already knows are stripped, so a foreign
+    city is never mistaken for a departure point.
+
+    Example:
+        >>> strip_leaving_clause("تور ترکیه استانبول 4 روزه از مهرآباد")
+        'تور ترکیه استانبول 4 روزه'
+        >>> strip_leaving_clause("تور مشهد از شیراز")
+        'تور مشهد'
+        >>> strip_leaving_clause("تور استانبول 4 روزه")
+        'تور استانبول 4 روزه'
+    """
+    return _SPACE.sub(" ", _LEAVING_CLAUSE.sub(" ", title)).strip()
+
+
+# What marks an element as naming an airport: the word itself, or a three-letter
+# code standing alone. Both are needed — chakavaktravel writes only the word,
+# tahagasht writes only the code beside the city, vanrosh writes both.
+_AIRPORT_MARKER = re.compile(r"فرودگاه|(?<![A-Za-z])[A-Z]{3}(?![A-Za-z])")
+
+# A flight line is short. Anything longer is a paragraph that mentions an
+# airport, and the city beside it belongs to a sentence, not to a route.
+_MAX_FLIGHT_CHARS = 220
+
+# How far the comma that introduces an airport may sit from the airport itself.
+# Wide enough for "ازمیر , عدنان مندرس ADB", where the airport's own name comes
+# between; narrow enough to refuse a comma that belongs to another sentence.
+_COMMA_TO_AIRPORT = 26
+
+# Three-letter words that are not airports. A meal plan in brackets reads
+# exactly like a code beside a city — vanrosh prints "هتل 4 ستاره BABAYLON
+# (ALL)" — and taking it turned a hotel into a destination.
+_NOT_AN_AIRPORT = {"ALL", "CIP", "VIP", "PDF", "USD", "EUR", "IRR", "IRT",
+                   "NEW", "TOP", "SPA", "THE", "AND", "FOR", "NAN"}
+
+# A city writes its own name and nothing else: Persian letters and spaces, no
+# digit and no Latin. That one condition is what tells "تهران (IKA)" from
+# "هتل 4 ستاره BABAYLON (ALL)", and it needs no list of hotels to do it.
+_ONLY_A_NAME = re.compile(r"^[آ-ی][آ-ی‌\s]{1,24}$")
+
+# "باکو (GYD)" — the city and its code in one element, which is how a flight
+# table headed by times writes it.
+_CITY_THEN_CODE = re.compile(r"^\s*([^()]{2,34}?)\s*\(([A-Z]{3})\)\s*$")
+
+# "ازمیر , عدنان مندرس ADB" and "... ساعت : 22:00 تهران , فرودگاه ... IKA".
+# The city is what ends the part before the comma: everything after it names
+# the airport, and "عدنان مندرس" is an airport's name, not a city's.
+_TRAILING_WORDS = re.compile(r"([آ-ی][آ-ی‌]*(?:\s+[آ-ی][آ-ی‌]*)?)\s*$")
+
+
+def _cities_beside(own: str, previous: Optional[str]) -> list[str]:
+    """Every city the airports on one line belong to, by whichever shape it uses.
+
+    A line may carry both ends of a flight — vanrosh prints the outbound and
+    the return in one paragraph — so every marker on it is read, not the first.
+
+    Example:
+        >>> _cities_beside("باکو (GYD)", None)
+        ['باکو']
+        >>> _cities_beside("ساعت : 22:00 تهران , فرودگاه امام خمینی IKA"
+        ...                " مدت پرواز : 03:30 ازمیر , عدنان مندرس ADB", None)
+        ['تهران', 'ازمیر']
+        >>> _cities_beside("فرودگاه بین المللی کوالالامپور", "کوالالامپور")
+        ['کوالالامپور']
+        >>> _cities_beside("هتل 4 ستاره BABAYLON (ALL)", None)
+        []
+    """
+    match = _CITY_THEN_CODE.match(own)
+    if match and match.group(2) not in _NOT_AN_AIRPORT:
+        found = match.group(1).strip()
+        if _ONLY_A_NAME.match(found) and "فرودگاه" not in found:
+            return [found]
+
+    # The city sits just before the comma that introduces the airport. The two
+    # have to be close: liyaseir writes "تحویل اتاق‌ها، ترانسفر زمینی ... به
+    # فرودگاه" in its itinerary, where the comma is a sentence away and the
+    # words before it are not a place at all.
+    cities: list[str] = []
+    for marker in _AIRPORT_MARKER.finditer(own):
+        if marker.group(0) in _NOT_AN_AIRPORT:
+            continue
+        head = own[: marker.start()]
+        comma = max(head.rfind(","), head.rfind("،"))
+        if comma < 0 or len(head) - comma > _COMMA_TO_AIRPORT:
+            continue
+        words = _TRAILING_WORDS.search(head[:comma])
+        if words is None:
+            continue
+        city = words.group(1).strip()
+        if _ONLY_A_NAME.match(city) and "فرودگاه" not in city and city not in cities:
+            cities.append(city)
+    if cities:
+        return cities
+
+    # The previous element is only the city when this one is the airport and
+    # nothing else. nahalgasht writes "استفاده از سالن CIP لانژ فرودگاه
+    # مهرآباد" in the middle of its services, and the element before that is
+    # "بیمه مسافرتی" — a sentence away from being a city.
+    if previous and own.startswith("فرودگاه") and _ONLY_A_NAME.match(previous.strip()):
+        return [previous.strip()]
+    return []
+
+
+def read_route(html: str) -> list[str]:
+    """Every city the page's flight lines name, in the order they are flown.
+
+    Read from the markup rather than from the page's text. Flattened, a flight
+    box reads "تهرانتهرانفرودگاه امام خمینیبار مجاز: 30اکونومیکوالالامپور" and
+    the city cannot be told from what surrounds it; in the markup each part sits
+    in its own element.
+
+    Example:
+        >>> read_route('<body><ul><li>تهران</li><li>فرودگاه امام خمینی</li></ul>'
+        ...            '<ul><li>کوالالامپور</li>'
+        ...            '<li>فرودگاه بین المللی کوالالامپور</li></ul></body>')
+        ['تهران', 'کوالالامپور']
+    """
+    tree = HTMLParser(html)
+    for node in tree.css("script, style, noscript"):
+        node.decompose()
+
+    route: list[str] = []
+    for node in tree.css("*"):
+        own = " ".join((node.text(deep=False) or "").split())
+        if not own or len(own) > _MAX_FLIGHT_CHARS:
+            continue
+        if not _AIRPORT_MARKER.search(own):
+            continue
+        previous = node.prev
+        while previous is not None and previous.tag in ("-text", "-undef"):
+            previous = previous.prev
+        earlier = (
+            " ".join((previous.text(deep=True) or "").split())
+            if previous is not None else None
+        )
+        for city in _cities_beside(own, earlier):
+            if city not in route:
+                route.append(city)
+    return route
+
+
+def find_destination(html: str) -> Optional[str]:
+    """Where the page's own flight lines say the tour goes.
+
+    The route names both ends and the airport table tells them apart: the leg
+    that does not leave from an Iranian airport is the one abroad. That is what
+    makes this safe without trusting the order the page prints them in.
+
+    Returns ``None`` where every city on the route is Iranian — a domestic tour
+    cannot be told apart this way, and guessing would be worse than the title
+    rule the caller falls back to.
+
+    Example:
+        >>> find_destination('<body><ul><li>تهران</li><li>فرودگاه امام خمینی</li></ul>'
+        ...                  '<ul><li>کوالالامپور</li>'
+        ...                  '<li>فرودگاه بین المللی کوالالامپور</li></ul></body>')
+        'کوالالامپور'
+    """
+    abroad = [city for city in read_route(html) if not is_a_departure_city(city)]
+    return abroad[0] if abroad else None
+
+
+# "پرواز از بانکوک به کوالالامپور" — a leg the tour flies between its stops.
+# The connective is kept out of the name: liyaseir writes "پرواز از تهران و
+# ورود به سئول", where "و ورود" belongs to the sentence and not to the city.
+_FLIGHT_LEG = re.compile(
+    r"پرواز[\s‌]*از[\s‌]+([آ-ی][آ-ی‌\s]{1,18}?)"
+    r"[\s‌]+(?:و[\s‌]+\S+[\s‌]+)?(?:به|تا)[\s‌]+(?:سمت[\s‌]+)?"
+    r"([آ-ی][آ-ی‌\s]{1,18}?)(?=[\s،,.]|$)"
+)
+
+
+def read_flight_legs(text: str) -> list[str]:
+    """Every city the page says the tour flies between, in the order flown.
+
+    This is where a tour that never names its destination still says it.
+    lachinseir sells "تور دور آسیا ویژه نوروز" — a title with no place in it at
+    all — and then lists "پرواز از بانکوک به کوالالامپور ، پرواز از کوالالامپور
+    به بالی". Those three cities are the tour.
+
+    Read from the page's own words rather than from a flight box, because the
+    sites that write this have no flight box; the ones that do are answered by
+    :func:`read_route` before this is reached.
+
+    Example:
+        >>> read_flight_legs("پرواز از بانکوک به کوالالامپور ، "
+        ...                  "پرواز از کوالالامپور به بالی")
+        ['بانکوک', 'کوالالامپور', 'بالی']
+        >>> read_flight_legs("پرواز از تهران و ورود به سئول")
+        ['تهران', 'سئول']
+        >>> read_flight_legs("ترانسفر فرودگاهی و بیمه مسافرتی")
+        []
+    """
+    cities: list[str] = []
+    for match in _FLIGHT_LEG.finditer(text):
+        for city in (match.group(1).strip(), match.group(2).strip()):
+            if _ONLY_A_NAME.match(city) and city not in cities:
+                cities.append(city)
+    return cities
+
+
+# Where a hotel's name starts inside a destination. A place is never called
+# "هتل", so once that word appears the rest of the string belongs to the hotel
+# — and this needs no help from the row, which is what makes it work where
+# matching the name did not: nahalgasht's title says "هتل هما" and its row says
+# "هتل هما 1", "هتل مجلل درویشی" against "هتل درویشی".
+_HOTEL_STARTS = re.compile(r"[\s§+]*(?:هتل|اقامتگاه|هاستل|مهمانپذیر)\b.*$")
+
+
+def without_a_hotel_word(display: Optional[str]) -> Optional[str]:
+    """A destination cut short at the word that starts a hotel's name.
+
+    Example:
+        >>> without_a_hotel_word("مشهد هتل مجلل درویشی")
+        'مشهد'
+        >>> without_a_hotel_word("مشهد هتل هما")
+        'مشهد'
+        >>> without_a_hotel_word("کوالالامپور")
+        'کوالالامپور'
+        >>> without_a_hotel_word("هتل گسترش") is None
+        True
+    """
+    if not display:
+        return display
+    return _SPACE.sub(" ", _HOTEL_STARTS.sub("", display)).strip() or None
+
+
+def without_the_hotel(display: Optional[str], hotel: Optional[str]) -> Optional[str]:
+    """A destination with the hotel's own name taken out of it.
+
+    Some titles name the hotel as well as the place — "تور زمینی تبریز هتل
+    گسترش" — and subtracting noise cannot know which words are the hotel's. It
+    does not have to: the page states the hotel elsewhere and step 3 has already
+    read it, so the name can simply be removed from what is left.
+
+    This is the one piece of noise that no vocabulary could ever cover, because
+    hotels are named after everything.
+
+    Example:
+        >>> without_the_hotel("تبریز هتل گسترش", "هتل گسترش")
+        'تبریز'
+        >>> without_the_hotel("مشهد هتل مجلل درویشی", "هتل مجلل درویشی")
+        'مشهد'
+        >>> without_the_hotel("کوالالامپور", "هتل ASTO")
+        'کوالالامپور'
+        >>> without_the_hotel("هتل گسترش", "هتل گسترش") is None
+        True
+    """
+    if not display or not hotel:
+        return display
+    left = display
+    for name in (hotel, *hotel.split(" + ")):
+        if name and name in left:
+            left = left.replace(name, " ")
+    left = _SPACE.sub(" ", left).strip(" §" + "".join("+-,،"))
+    return left or None

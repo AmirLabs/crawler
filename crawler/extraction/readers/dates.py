@@ -193,8 +193,8 @@ class DateText:
     and can be reviewed.
 
     Example:
-        >>> DateText(raw="01 شهریور ساعت 11:00", day=1, month=6, year=None, time="11:00", start=0, end=20)
-        DateText(raw='01 شهریور ساعت 11:00', day=1, month=6, year=None, time='11:00', start=0, end=20)
+        >>> DateText(raw="01 شهریور ساعت 11:00", month=6, day=1, year=None, time="11:00", start=0, end=20)
+        DateText(raw='01 شهریور ساعت 11:00', month=6, day=1, year=None, time='11:00', start=0, end=20)
     """
 
     raw: str

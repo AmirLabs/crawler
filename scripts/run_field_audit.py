@@ -47,10 +47,11 @@ import argparse
 import asyncio
 import json
 import logging
+import re
 import sys
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -61,6 +62,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from crawler.config import PROJECT_ROOT
 from crawler.extraction.models import ExtractedPage
+from crawler.extraction.readers.dates import jalali_to_gregorian
 from crawler.extraction.page_extract import extract_page
 from crawler.filtering.tour_groups import group_by_tour
 from crawler.filtering.url_filter import discover_tour_urls
@@ -556,6 +558,146 @@ def write_score(result: dict, folder: Path) -> None:
     (folder / "score.txt").write_text("\n".join(lines), encoding="utf-8")
 
 
+# What a value looks like when it is filled and still wrong. Every check is on
+# the shape of the value, not on the site it came from.
+_A_HOTEL_WORD = re.compile(r"هتل|hotel|resort|ریزورت")
+_A_TOUR_WORD = re.compile(r"^تور\b|\bتور$")
+_A_PRICE_RUN = re.compile(r"[\d۰-۹٠-٩]{4,}")
+_MAX_SANE_NAME = 40
+
+
+def _jalali_day(value: object) -> Optional[date]:
+    """One Jalali date string as a day, or ``None`` when it is not one.
+
+    Example:
+        >>> _jalali_day("1405-06-19")
+        datetime.date(2026, 9, 10)
+        >>> _jalali_day("شهریور ماه") is None
+        True
+    """
+    if not isinstance(value, str) or not re.match(r"^\d{4}-\d{1,2}-\d{1,2}$", value):
+        return None
+    try:
+        year, month, day = (int(part) for part in value.split("-"))
+        return date(*jalali_to_gregorian(year, month, day))
+    except (ValueError, TypeError):
+        return None
+
+
+def suspect_reasons(row: dict) -> list[str]:
+    """Why one row looks wrong even though its fields are filled.
+
+    The fill rate cannot see any of this, and twice in one week that blindness
+    hid a real fault: every hotel on chakavaktravel was named "4 شب اقامت + شهر:
+    کوالالامپور" and every destination on tahagasht carried the hotel with it,
+    both at 100%. A field that is filled is not a field that is right, and the
+    only cheap way to tell them apart is to look for values shaped like the
+    wrong thing.
+
+    Nothing here is corrected. Amir decides whether a site states something —
+    this list only makes the pages worth his eye short enough to read.
+
+    Example:
+        >>> suspect_reasons({"destination": "دبی هتل جمیرا القصر"})
+        ['destination names a hotel']
+        >>> suspect_reasons({"departure_date": "1405-06-19",
+        ...                  "return_date": "1405-06-19"})
+        ['return_date is not after departure_date']
+        >>> suspect_reasons({"hotels": "Kemer Star Hotel"})
+        []
+        >>> suspect_reasons({"destination": "دور آسیا نوروز",
+        ...                  "destinations": ["دور آسیا نوروز", "بانکوک", "بالی"]})
+        ["destination 'دور آسیا نوروز' names none of ['بانکوک', 'بالی']"]
+    """
+    found: list[str] = []
+    destination = row.get("destination")
+    hotels = row.get("hotels")
+
+    if isinstance(destination, str):
+        if _A_HOTEL_WORD.search(destination):
+            found.append("destination names a hotel")
+        if len(destination) > _MAX_SANE_NAME:
+            found.append("destination is too long to be a place")
+    if isinstance(hotels, str):
+        if _A_TOUR_WORD.search(hotels):
+            found.append("hotels names a tour")
+        if _A_PRICE_RUN.search(hotels):
+            found.append("hotels carries a number")
+        if len(hotels) > _MAX_SANE_NAME * 3:
+            found.append("hotels is too long to be a name")
+    if destination and destination == row.get("origin"):
+        found.append("origin and destination are the same place")
+
+    # Two sources disagreeing is the cheapest evidence there is that one of
+    # them is wrong, and it needs no list of place names to spot. lachinseir's
+    # title yields "دور آسیا نوروز" while its own text flies to بانکوک,
+    # کوالالامپور and بالی: the name a person reads is in neither list.
+    listed = row.get("destinations")
+    if isinstance(listed, list) and len(listed) > 1 and isinstance(destination, str):
+        elsewhere = [place for place in listed if place != destination]
+        if elsewhere and not any(place in destination or destination in place
+                                 for place in elsewhere):
+            found.append(
+                f"destination {destination!r} names none of {elsewhere}"
+            )
+
+    out, back = _jalali_day(row.get("departure_date")), _jalali_day(row.get("return_date"))
+    if out and back:
+        if back <= out:
+            found.append("return_date is not after departure_date")
+        else:
+            nights = row.get("number_of_nights")
+            if isinstance(nights, int) and (back - out).days != nights:
+                found.append(
+                    f"{(back - out).days} days between the dates,"
+                    f" but number_of_nights is {nights}"
+                )
+
+    for field, value in row.items():
+        if field.endswith("_price") and value == 0:
+            found.append(f"{field} is zero")
+    return found
+
+
+def write_suspect(result: dict, folder: Path) -> None:
+    """The rows that are filled and still look wrong, for Amir to judge.
+
+    Kept apart from missing.txt because these are the opposite problem: a gap
+    is visible in the score and a wrong value is not.
+    """
+    lines = [
+        f"{result['domain']} — filled, and still worth a look",
+        f"{len(result['pages'])} pages, audited {_stamp()}",
+        "",
+        "None of this is corrected anywhere. A value shaped like the wrong",
+        "thing is listed here so the eye-check is short; whether the site",
+        "really says it is your call.",
+        "=" * 86,
+        "",
+    ]
+    total = 0
+    for page in result["pages"]:
+        seen: dict[str, list[str]] = {}
+        for row in page.get("data") or []:
+            for reason in suspect_reasons(row):
+                seen.setdefault(reason, [])
+                sample = f"{row.get('destination')!r} / {row.get('hotels')!r}"
+                if sample not in seen[reason] and len(seen[reason]) < 3:
+                    seen[reason].append(sample)
+        if not seen:
+            continue
+        total += len(seen)
+        lines += [f"  PAGE {page['url']}"]
+        for reason, samples in sorted(seen.items()):
+            lines.append(f"      {reason}")
+            for sample in samples:
+                lines.append(f"          {sample}")
+        lines.append("")
+    if not total:
+        lines.append("nothing on these pages looked wrong")
+    (folder / "suspect.txt").write_text("\n".join(lines), encoding="utf-8")
+
+
 def write_skipped(result: dict, folder: Path) -> None:
     """The URLs that passed the filter and sold nothing, for Amir to judge.
 
@@ -592,6 +734,7 @@ def write_site(result: dict) -> Path:
     write_missing(result, folder)
     write_score(result, folder)
     write_skipped(result, folder)
+    write_suspect(result, folder)
     return folder
 
 

@@ -473,6 +473,9 @@ def map_blocks(containers: list[RowContainer]) -> list[ExtractedRow]:
     departure list twice, in the page and again inside a booking dialog, and the
     second copy is shorter, so only comparing the rows themselves catches it.
 
+    The grade is dropped from the name and kept in its own field, so a hotel
+    written "هتل آرگ ۴ ستاره" is named "هتل آرگ" here.
+
     Example:
         >>> from selectolax.parser import HTMLParser
         >>> from crawler.extraction.structure.html_rows import (
@@ -486,9 +489,10 @@ def map_blocks(containers: list[RowContainer]) -> list[ExtractedRow]:
         ...     '<div class="bed">یک تخته 89,000,000 تومان</div></div></div>'
         ... )
         >>> rows = map_blocks(offer_blocks(find_row_containers(tree)))
-        >>> [(r.index, r.fields["hotel_name"].value) for r in rows]
-        [(0, 'هتل آرگ ۴ ستاره'), (1, 'هتل آرگ ۴ ستاره'),
-         (2, 'هتل هما ۵ ستاره'), (3, 'هتل هما ۵ ستاره')]
+        >>> [r.fields["hotel_name"].value for r in rows]
+        ['هتل آرگ', 'هتل آرگ', 'هتل هما', 'هتل هما']
+        >>> [r.fields["hotel_star_rating"].value for r in rows]
+        [4, 4, 5, 5]
     """
     rows: list[ExtractedRow] = []
     seen: set[tuple[tuple[str, str], ...]] = set()
