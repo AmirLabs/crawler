@@ -28,7 +28,10 @@ what really happened.
 from __future__ import annotations
 
 import re
+from datetime import date
 from typing import Optional
+
+from selectolax.parser import HTMLParser
 
 from crawler.extraction.structure.hotel_block import HotelBlock, read_hotel_block
 from crawler.extraction.structure.html_rows import RowContainer
@@ -39,7 +42,12 @@ from crawler.extraction.models import (
     record_attempt,
 )
 from crawler.extraction.target_fields import ROW_FIELDS, unresolved
-from crawler.extraction.readers.dates import DateText, find_dates, to_iso
+from crawler.extraction.readers.dates import (
+    DateText,
+    find_dates,
+    jalali_to_gregorian,
+    to_iso,
+)
 from crawler.extraction.readers.labels import (
     detect_board_type,
     detect_nights,
@@ -59,6 +67,18 @@ _RETURN_LABELS = ("برگشت", "بازگشت", "return")
 # repeat work the deterministic rules already do.
 _ROW_TEXT_SCOPE = f"{METHOD_HEURISTIC_HTML}:row_text"
 _HOTEL_BLOCK_SCOPE = f"{METHOD_HEURISTIC_HTML}:hotel_block"
+_ATTRIBUTE_SCOPE = f"{METHOD_HEURISTIC_HTML}:data_attribute"
+
+# A Jalali date written as an attribute value: "1405-06-19". Any ``data-*``
+# holding one is read, whatever it is named, because the name is the site's
+# choice and the shape is not.
+_DATA_JALALI = re.compile(r"^\s*(1[34]\d{2})-(\d{1,2})-(\d{1,2})\s*$")
+
+# How far above a row its dates may sit. bisanseir.com writes them on the
+# reserve button of the hotel block, three levels above the room row, and
+# stops there; walking further would reach the page's own date picker, whose
+# dates belong to the other departures.
+_ATTRIBUTE_LEVELS = 4
 
 # What the block enclosing the rows can supply, and the field each one fills.
 # These are read once per block and shared by its rows, because the rows are
@@ -288,8 +308,98 @@ def map_rows(container: RowContainer) -> list[ExtractedRow]:
         if not row.fields:
             continue
         _apply_hotel_block(row, block)
+        if index < len(container.members):
+            _apply_attribute_dates(row, container.members[index])
         rows.append(row)
     return rows
+
+
+def _dates_in_attributes(node) -> list[str]:
+    """The Jalali dates a row's markup states in ``data-*`` attributes, in order.
+
+    Read from the nearest level that carries any, so a room row picks up its
+    own hotel's departure and not the page's date picker. The names are not
+    matched, only the values: bisanseir.com calls them ``data-date`` and
+    ``data-end-date``, and the next site will call them something else.
+
+    Example:
+        >>> tree = HTMLParser('<div class="hotel">'
+        ...     '<button data-date="1405-06-19" data-end-date="1405-06-27"></button>'
+        ...     '<div class="beds"><div class="bed">دو تخته</div></div></div>')
+        >>> _dates_in_attributes(tree.css_first("div.bed"))
+        ['1405-06-19', '1405-06-27']
+    """
+    current = node
+    for _ in range(_ATTRIBUTE_LEVELS):
+        if current is None:
+            break
+        found: list[str] = []
+        for element in [current, *current.css("*")]:
+            for name, value in element.attributes.items():
+                if not name.startswith("data-") or not value:
+                    continue
+                if _DATA_JALALI.match(value) and value.strip() not in found:
+                    found.append(value.strip())
+        if found:
+            return sorted(found)
+        current = current.parent
+    return []
+
+
+def _apply_attribute_dates(row: ExtractedRow, node) -> None:
+    """Give a row the dates its own markup carries, where its text said none.
+
+    The earlier date is the departure and the later one the return, the same
+    reading :func:`_assign_dates` gives a row's text. Nothing is guessed from a
+    single date: one date is when the tour leaves, never when it comes back.
+
+    This is why it is worth doing at all. bisanseir.com prints every row's
+    departure and return in the markup and neither in the text, so both came
+    back empty — ``return_date`` at 0% on five of five pages audited — while
+    the answer sat in the same element as the price.
+
+    Example:
+        >>> tree = HTMLParser('<div class="hotel">'
+        ...     '<button data-date="1405-06-19" data-end-date="1405-06-27"></button>'
+        ...     '<div class="bed">دو تخته</div></div>')
+        >>> row = map_row_text("دو تخته")
+        >>> _apply_attribute_dates(row, tree.css_first("div.bed"))
+        >>> row.fields["departure_date"].value["raw"], row.fields["return_date"].value["iso"]
+        ('1405-06-19', '2026-09-18')
+    """
+    if "departure_date" in row.fields and "return_date" in row.fields:
+        return
+    found = [value for value in _dates_in_attributes(node) if _to_value(value)]
+    if not found:
+        return
+    for name, value in (("departure_date", found[0]),
+                        ("return_date", found[1] if len(found) > 1 else None)):
+        if value is None or name in row.fields:
+            continue
+        row.fields[name] = ExtractedField(
+            _to_value(value), METHOD_HEURISTIC_HTML, _ATTRIBUTE_SCOPE
+        )
+        row.attempts.pop(name, None)
+    row.unresolved_fields = unresolved(row.fields, ROW_FIELDS)
+
+
+def _to_value(jalali: str) -> Optional[dict]:
+    """One attribute date in the shape a row's date field uses.
+
+    Example:
+        >>> _to_value("1405-06-19")
+        {'iso': '2026-09-10', 'raw': '1405-06-19', 'time': None}
+        >>> _to_value("1405-13-40") is None
+        True
+    """
+    try:
+        year, month, day = (int(part) for part in jalali.split("-"))
+        if not (1 <= month <= 12 and 1 <= day <= 31):
+            return None
+        iso = date(*jalali_to_gregorian(year, month, day)).isoformat()
+    except (ValueError, TypeError):
+        return None
+    return {"iso": iso, "raw": jalali, "time": None}
 
 
 def _fingerprint(row: ExtractedRow) -> tuple[tuple[str, str], ...]:

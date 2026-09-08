@@ -47,26 +47,62 @@ from crawler.extraction.readers.dates import (
     gregorian_to_jalali,
     to_iso,
 )
-from crawler.extraction.readers.labels import detect_nights, detect_star_rating
+from crawler.extraction.readers.labels import _GAP, _ZWNJ, detect_nights, detect_star_rating
 from crawler.extraction.target_fields import ROW_FIELDS, unresolved
 from crawler.extraction.readers.transport import main_text
 from crawler.extraction.structure.hotel_block import (
+    _HOTEL_WORDS,
     _clean,
-    _describes_a_hotel,
     _looks_like_a_name,
 )
 
-# How a page introduces its own departure. Ordered by how specific the wording
-# is, so a page using several is read by its clearest one.
-_DEPARTURE_LABELS = ("پرواز رفت", "تاریخ رفت", "رفت :", "رفت:", "حرکت:", "حرکت :")
+# What a caption looks like when it introduces the day a tour leaves, in tiers
+# from the most specific wording to the least, so a page using several is read
+# by its clearest one. Shapes rather than literal strings: the six fixed labels
+# this replaced all required their own spelling, four of them with a colon, and
+# a colon is a habit of running prose. A site that gives the date a box of its
+# own captions it "تاریخ حرکت" with no colon at all, and matched none of them —
+# chakavaktravel.com and lachinseir.com scored 0% on both dates for that reason
+# alone.
+_DEPARTURE_CAPTIONS = (
+    # A plural caption introduces the whole list, not one date, and is tried
+    # first for that reason. chakavaktravel prints "تاریخ های تور" over five
+    # departures and "تاریخ شروع تور" over the first of them; read by the
+    # second, four fifths of what the page sells was never seen.
+    re.compile(r"تاریخ" + _GAP + r"ها[ی]?" + _GAP
+               + r"(?:تور|سفر|حرکت|پرواز|اعزام|برگزاری)"),
+    re.compile(r"پرواز" + _GAP + r"رفت"),
+    re.compile(r"(?:تاریخ|روز|زمان)[\sهای" + _ZWNJ + r"]{0,6}"
+               r"(?:رفت|حرکت|اعزام|خروج|برگزاری|شروع|سفر)"),
+    re.compile(r"(?:شروع|آغاز)" + _GAP + r"تور|مسیر" + _GAP + r"رفت"),
+    re.compile(r"(?:رفت|حرکت|اعزام|خروج)" + _GAP + r"[:：]"),
+)
 
 # How it introduces the way back. Required before a return date is believed.
-_RETURN_LABELS = ("پرواز برگشت", "برگشت", "بازگشت")
+_RETURN_CAPTIONS = (
+    re.compile(r"پرواز" + _GAP + r"(?:برگشت|بازگشت)"),
+    re.compile(r"(?:تاریخ|روز|زمان)[\sهای" + _ZWNJ + r"]{0,6}"
+               r"(?:برگشت|بازگشت|ورود|پایان)"),
+    re.compile(r"(?:پایان|اتمام)" + _GAP + r"تور|مسیر" + _GAP + r"برگشت"),
+    re.compile(r"برگشت|بازگشت"),
+)
+
+# How much text *before* a caption may hold its date, for the pages that print
+# the value first and name it afterwards. Far shorter than the forward window
+# on purpose: reading backwards is guessing about text that was written for
+# something else, and lachinseir.com — "پاریس 25 مرداد (شروع تور / مسیر رفت)"
+# — needs only a few characters of it.
+_BACK_WINDOW = 60
 
 # How much text after a label may hold its date. Wide enough for tahagasht's
 # "پرواز رفت شماره پرواز W5079 ۰۶ شهریور" and the return that follows it,
 # narrow enough not to reach the day-by-day itinerary below.
 _LABEL_WINDOW = 240
+
+# How long a caption may be before it stops being a caption. A block that
+# labels its date says only that; a sentence that happens to contain the word
+# is prose, and reading a date out of it is the page-text rule's job.
+_MAX_CAPTION_CHARS = 40
 
 # A hotels section is found by its heading. The names under it are short; a
 # long run is the description that follows them.
@@ -134,27 +170,56 @@ class PageFacts:
         return " + ".join(self.hotel_names) if self.hotel_names else None
 
 
-def _first_date_after(text: str, labels: tuple[str, ...]) -> tuple[Optional[DateText], int]:
-    """The first date printed after any of ``labels``, and where its window began.
+def _first_date_after(
+    text: str, captions: tuple[re.Pattern, ...]
+) -> tuple[Optional[DateText], int]:
+    """The first date printed after any of ``captions``, and where its window began.
 
-    Every occurrence of every label is tried, not just the first: a site names
+    Every occurrence of every caption is tried, not just the first: a site names
     the outbound flight in its service list long before it states when the
-    flight leaves.
+    flight leaves. The tiers are tried in turn, so the clearest wording on the
+    page wins over a vaguer one printed earlier.
 
     Example:
         >>> found, _ = _first_date_after(
-        ...     "پرواز رفت و برگشت با ماهان ... پرواز رفت شماره W5079 ۰۶ شهریور", ("پرواز رفت",))
+        ...     "پرواز رفت و برگشت با ماهان ... پرواز رفت شماره W5079 ۰۶ شهریور",
+        ...     _DEPARTURE_CAPTIONS)
         >>> found.day, found.month
         (6, 6)
+        >>> found, _ = _first_date_after("تاریخ حرکت ۱۵ شهریور", _DEPARTURE_CAPTIONS)
+        >>> found.day, found.month
+        (15, 6)
     """
-    for label in labels:
-        start = text.find(label)
-        while start >= 0:
-            window = text[start: start + _LABEL_WINDOW]
-            dates = find_dates(window)
+    for caption in captions:
+        for match in caption.finditer(text):
+            start = match.start()
+            dates = find_dates(text[start: start + _LABEL_WINDOW])
             if dates:
                 return dates[0], start
-            start = text.find(label, start + 1)
+    return None, -1
+
+
+def _first_date_before(
+    text: str, captions: tuple[re.Pattern, ...]
+) -> tuple[Optional[DateText], int]:
+    """The last date printed just *before* a caption, and where the caption is.
+
+    Some pages name the value after showing it. Tried only when nothing was
+    found ahead of the caption, and over a much shorter run of text, because a
+    date behind a caption was written for whatever came before it.
+
+    Example:
+        >>> found, _ = _first_date_before(
+        ...     "5 شب بارسلون 25 مرداد (شروع تور / مسیر رفت)", _DEPARTURE_CAPTIONS)
+        >>> found.day, found.month
+        (25, 5)
+    """
+    for caption in captions:
+        for match in caption.finditer(text):
+            start = match.start()
+            dates = find_dates(text[max(0, start - _BACK_WINDOW): start])
+            if dates:
+                return dates[-1], start
     return None, -1
 
 
@@ -173,10 +238,10 @@ def _departures_after(text: str, at: int, first: DateText) -> list[DateText]:
         [(25, 4), (12, 5), (29, 5), (19, 6)]
     """
     window = text[at: at + _LABEL_WINDOW]
-    for label in _RETURN_LABELS:
-        stop = window.find(label)
-        if stop >= 0:
-            window = window[:stop]
+    for caption in _RETURN_CAPTIONS:
+        stop = caption.search(window)
+        if stop is not None:
+            window = window[:stop.start()]
 
     seen: set[tuple] = set()
     departures: list[DateText] = []
@@ -209,18 +274,104 @@ def read_dates(text: str) -> tuple[list[DateText], Optional[DateText]]:
         >>> [(d.day, d.month) for d in out]
         [(25, 4), (12, 5), (29, 5), (19, 6)]
     """
-    departure, at = _first_date_after(text, _DEPARTURE_LABELS)
+    departure, at = _first_date_after(text, _DEPARTURE_CAPTIONS)
+    behind = False
+    if departure is None:
+        departure, at = _first_date_before(text, _DEPARTURE_CAPTIONS)
+        behind = True
     if departure is None:
         return [], None
 
     departures = _departures_after(text, at, departure)
 
     # The return has to be labelled, and has to come after the departure.
-    after = text[at + departure.end:]
-    returning, _ = _first_date_after(after, _RETURN_LABELS)
+    after = text[at:] if behind else text[at + departure.end:]
+    returning, _ = _first_date_after(after, _RETURN_CAPTIONS)
     if returning is not None and to_iso(returning) and to_iso(departure):
         if to_iso(returning) <= to_iso(departure):
             returning = None  # a "return" before the departure is a repeat
+    return departures, returning
+
+
+def _caption_value(node, captions: tuple[re.Pattern, ...]) -> list[DateText]:
+    """The dates a captioned block holds, read from the block and not the page.
+
+    A caption is an element whose *own* text says what the value is and nothing
+    else — "تاریخ حرکت" in one span, "۱۵ شهریور" in the next. Flattening the
+    page puts those two side by side only by luck, and the 240-character window
+    :func:`_first_date_after` reads spans whatever the layout left in between.
+    Here the value is looked for where the markup says it is: inside the
+    caption's own element first, then the elements after it, then its parent.
+
+    Example:
+        >>> tree = HTMLParser('<div><span>تاریخ حرکت</span>'
+        ...                   '<span>۱۵ شهریور</span></div>')
+        >>> found = _caption_value(tree.css_first("span"), _DEPARTURE_CAPTIONS)
+        >>> [(d.day, d.month) for d in found]
+        [(15, 6)]
+    """
+    own = _clean(node.text(deep=False))
+    if not own or len(own) > _MAX_CAPTION_CHARS:
+        return []
+    match = next((m for c in captions if (m := c.search(own))), None)
+    if match is None:
+        return []
+
+    places = [own[match.end():]]
+    places += [_clean(after.text(deep=True)) for after in _following(node)]
+    if node.parent is not None:
+        places.append(_clean(node.parent.text(deep=True))[len(own):])
+
+    for text in places:
+        found = find_dates(text or "")
+        if found:
+            seen: set[tuple] = set()
+            kept: list[DateText] = []
+            for parsed in found:
+                key = (parsed.day, parsed.month, parsed.year)
+                if parsed.day is None or key in seen:
+                    continue
+                seen.add(key)
+                kept.append(parsed)
+            if kept:
+                return kept
+    return []
+
+
+def read_block_dates(html: str) -> tuple[list[DateText], Optional[DateText]]:
+    """The tour's dates where the page gives them a block of their own.
+
+    Read only when :func:`read_dates` found nothing in the page's running text.
+    That order is deliberate: the text rule is what the seven working sites are
+    measured on, and a new rule that runs first could only take results away.
+
+    Example:
+        >>> read_block_dates('<body><div><span>تاریخ حرکت</span><span>۱۵ شهریور'
+        ...                  '</span></div><div><span>تاریخ برگشت</span>'
+        ...                  '<span>۱۸ شهریور</span></div></body>')[0][0].day
+        15
+        >>> read_block_dates('<body><p>تور استانبول</p></body>')
+        ([], None)
+    """
+    tree = HTMLParser(html)
+    for node in tree.css("script, style, noscript"):
+        node.decompose()
+
+    departures: list[DateText] = []
+    returning: Optional[DateText] = None
+    for node in tree.css("*"):
+        if not departures:
+            departures = _caption_value(node, _DEPARTURE_CAPTIONS)
+            if departures:
+                continue
+        if returning is None:
+            found = _caption_value(node, _RETURN_CAPTIONS)
+            returning = found[0] if found else None
+
+    if departures and returning is not None:
+        out, back = to_iso(departures[0]), to_iso(returning)
+        if out and back and back <= out:
+            returning = None  # a "return" on or before the departure is a repeat
     return departures, returning
 
 
@@ -250,17 +401,51 @@ def _following(node) -> list:
     return out
 
 
+def _heads_a_hotel_section(title: str) -> bool:
+    """Whether a heading introduces a list of hotels, not merely mentions one.
+
+    :func:`~crawler.extraction.structure.hotel_block._describes_a_hotel` is a
+    looser test, and rightly so: it judges a block that already sits beside a
+    price, where a bare star rating is evidence enough. A heading is judged
+    with nothing around it, and that difference cost three sites. nahalgasht's
+    summary box captions a row "هتل" and fills it with "2 و 3 و 4 و 5 ستاره",
+    which passed on the rating alone and turned the whole box into six hotels.
+
+    Example:
+        >>> _heads_a_hotel_section("هتل‌های محل اقامت")
+        True
+        >>> _heads_a_hotel_section("2 و 3 و 4 و 5 ستاره")
+        False
+        >>> _heads_a_hotel_section("خدمات: BB")
+        False
+    """
+    low = title.lower()
+    return any(word in low for word in _HOTEL_WORDS)
+
+
 def read_hotels(html: str) -> list[str]:
     """The hotels a page lists under a heading of their own.
 
     Found by the heading rather than by position: the section may sit above or
     below the price table, and only its title is reliable across sites.
 
+    Two rules keep the reading inside the list. It stops at the first element
+    after the heading that names nothing, because a list of hotels is printed
+    together and whatever follows the last one is a different section —
+    lachinseir.com carried on past its four hotels into "شرایط اقساط" and
+    "دلار". And every name has to sit in the same tag as the first, because a
+    list is written the same way all the way down, while a summary box
+    alternates a caption and its value.
+
     Example:
         >>> read_hotels('<body><h2>هتل‌های محل اقامت</h2>'
         ...             '<div>KEMPINSKI HOTEL BEIJING 5*TOP</div>'
         ...             '<div>GRAND HYATT SHANGHAI 5*TOP</div></body>')
         ['KEMPINSKI HOTEL BEIJING 5*TOP', 'GRAND HYATT SHANGHAI 5*TOP']
+        >>> read_hotels('<body><h2>هتل‌های محل اقامت</h2>'
+        ...             '<div>IMPIANA HOTEL</div><div>MERCURE MAKKASAN</div>'
+        ...             '<hr/><span>شرایط اقساط</span></body>')
+        ['IMPIANA HOTEL', 'MERCURE MAKKASAN']
     """
     tree = HTMLParser(html)
     for node in tree.css("script, style, noscript"):
@@ -269,26 +454,51 @@ def read_hotels(html: str) -> list[str]:
     for tag in _HOTEL_HEADING_TAGS:
         for heading in tree.css(tag):
             title = _clean(heading.text(deep=True))
-            if not title or not _describes_a_hotel(title) or len(title) > 40:
+            if not title or not _heads_a_hotel_section(title) or len(title) > 40:
                 continue
             # Only what comes *after* the heading. Reading the whole parent
             # swept in the paragraph above it, which on a real page was the
             # departure sentence and became a hotel name.
             names: list[str] = []
+            shape: Optional[str] = None
             for sibling in _following(heading):
-                for node in [sibling, *sibling.css("*")]:
-                    own = _clean(node.text(deep=False))
-                    if not own or own == title:
-                        continue
-                    if _looks_like_a_name(own) and own not in names:
-                        names.append(own)
-                    if len(names) >= _MAX_HOTELS:
-                        break
+                found = _names_in(sibling, title, shape)
+                if not found:
+                    break  # the list has ended; what follows is another section
+                shape = shape or found[0][0]
+                for _, name in found:
+                    if name not in names:
+                        names.append(name)
                 if len(names) >= _MAX_HOTELS:
                     break
             if names:
-                return names
+                return names[:_MAX_HOTELS]
     return []
+
+
+def _names_in(element, title: str, shape: Optional[str]) -> list[tuple[str, str]]:
+    """The hotel names one element holds, each with the tag that carried it.
+
+    ``shape`` is the tag the first name was found in, and once set nothing else
+    is accepted: it is what tells a list of hotels from a box that prints a
+    caption and a value in turn.
+
+    Example:
+        >>> tree = HTMLParser('<div><h3>IMPIANA HOTEL</h3><p>شرایط اقساط</p></div>')
+        >>> _names_in(tree.css_first("div"), "هتل‌ها", None)
+        [('h3', 'IMPIANA HOTEL')]
+    """
+    found: list[tuple[str, str]] = []
+    for node in [element, *element.css("*")]:
+        own = _clean(node.text(deep=False))
+        if not own or own == title:
+            continue
+        if shape is not None and node.tag != shape:
+            continue
+        if _looks_like_a_name(own):
+            found.append((node.tag, own))
+            shape = shape or node.tag
+    return found
 
 
 def title_nights(html: str) -> Optional[int]:
@@ -383,11 +593,18 @@ def apply_page_facts(rows: list, facts: PageFacts) -> tuple[list, int]:
     """
     paired = _across_departures(rows, facts)
     rows = [row for row, _ in paired]
+    # A stated return belongs to the departure it was printed after, and to no
+    # other. chakavaktravel lists five dates under "تاریخ های تور" and then one
+    # "تاریخ پایان تور": that is the first departure's way home, and pasting it
+    # on the other four would date four fifths of the page wrongly. The rest
+    # are counted from the night count, or left empty when there is none.
+    first = facts.departures[0] if facts.departures else None
     filled = 0
     for row, mine in paired:
+        stated = facts.return_ if mine is first else None
         for name, value in (
             ("departure_date", _date_value(mine)),
-            ("return_date", _date_value(facts.return_ or _derive_return(mine, facts.nights))),
+            ("return_date", _date_value(stated or _derive_return(mine, facts.nights))),
             ("hotel_name", facts.hotels),
             ("nights", facts.nights),
             ("hotel_star_rating", facts.star_rating),
@@ -470,6 +687,8 @@ def read_page_facts(html: str) -> PageFacts:
     """
     text = main_text(html)
     departures, returning = read_dates(text)
+    if not departures:
+        departures, returning = read_block_dates(html)
     nights = _labelled(text, _NIGHT_LABELS, detect_nights, _LABEL_VALUE_WINDOW)
     if nights is None:
         nights = title_nights(html)

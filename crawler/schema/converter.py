@@ -28,7 +28,7 @@ fill.** Nothing site-specific is needed to tell the two apart.
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Optional
 
 from crawler.extraction.models import ExtractedPage, ExtractedRow
@@ -264,6 +264,46 @@ def _group_key(row: ExtractedRow) -> tuple[Optional[str], Optional[str]]:
     return date_key, _value(row.fields, "hotel_name")
 
 
+def _return_from_nights(departure: TourDate, nights: Optional[int]) -> Optional[TourDate]:
+    """The day a tour comes home, when the page said only how long it is.
+
+    This belongs here rather than in step 3 because step 3 never holds both
+    halves at once: bisanseir.com prints no night count in its rows at all, and
+    reads 3 from the tour's name — which only happens in :func:`build_tour`.
+    Deriving it earlier looked right and filled nothing, 0% on five of five
+    pages audited.
+
+    Only a row with no return at all is given one. A page that printed a return
+    we could not resolve into a day keeps what it printed: what the site said
+    is Amir's to judge, and replacing it with arithmetic hides the question.
+
+    ``raw`` names the arithmetic, so a derived return is never read back as one
+    the page stated. Whether the answer is the departure plus the nights or one
+    day more is measured in issue #2; until that is settled the plus-nights
+    reading is used, the same one :mod:`crawler.extraction.page_facts` uses.
+
+    Example:
+        >>> _return_from_nights(TourDate(iso="2026-09-12", raw="1405-06-21"), 3)
+        TourDate(raw='1405-06-21 + 3 شب', iso='2026-09-15', jalali='1405-06-24', time=None)
+        >>> _return_from_nights(TourDate(), 3) is None
+        True
+        >>> _return_from_nights(TourDate(iso="2026-09-12"), None) is None
+        True
+    """
+    if not departure.iso or not nights:
+        return None
+    try:
+        ends = date.fromisoformat(departure.iso) + timedelta(days=nights)
+    except ValueError:
+        return None
+    iso = ends.isoformat()
+    return TourDate(
+        raw=f"{departure.raw or departure.iso} + {nights} شب",
+        iso=iso,
+        jalali=_jalali_string(iso),
+    )
+
+
 def _build_offer(
     rows: list[ExtractedRow], nights_from_name: Optional[int] = None
 ) -> TourOffer:
@@ -298,14 +338,36 @@ def _build_offer(
         or nights_from_name
         or _nights_between(departure, ret)
     )
+    if not ret.iso and not ret.raw:
+        ret = _return_from_nights(departure, nights) or ret
 
-    hotel = Hotel(
-        name=_value(first, "hotel_name"),
-        city=_value(first, "hotel_city"),
-        star_rating=_value(first, "hotel_star_rating"),
-        board_type=_value(first, "board_type"),
-        nights=nights,
-    )
+    stays = _value(first, "hotels")
+    if isinstance(stays, list) and stays:
+        # Where the source stated each hotel in full, keep them all: a stay
+        # that moves city has a grade, a board and a night count per hotel,
+        # and the flat fields below can only carry the first of each.
+        hotels = [
+            Hotel(
+                name=stay.get("name"),
+                name_latin=stay.get("name_latin"),
+                city=stay.get("city"),
+                star_rating=stay.get("star_rating"),
+                board_type=stay.get("board_type"),
+                nights=stay.get("nights"),
+            )
+            for stay in stays
+            if isinstance(stay, dict)
+        ]
+    else:
+        hotels = [
+            Hotel(
+                name=_value(first, "hotel_name"),
+                city=_value(first, "hotel_city"),
+                star_rating=_value(first, "hotel_star_rating"),
+                board_type=_value(first, "board_type"),
+                nights=nights,
+            )
+        ]
 
     transport_name = _value(first, "transport_name")
     transport_duration = _value(first, "transport_duration")
@@ -327,7 +389,7 @@ def _build_offer(
         departure=departure,
         ret=ret,
         nights=nights,
-        hotel=hotel,
+        hotels=hotels,
         transport=transport,
         prices=prices,
         source_key=rows[0].source_path,
