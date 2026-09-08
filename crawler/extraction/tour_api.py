@@ -399,6 +399,7 @@ def enrich_from_api(page: ExtractedPage, data: dict) -> ExtractedPage:
 
     page.unresolved_page_fields = unresolved(page.page_fields, PAGE_FIELDS)
     page.rows = _rows_from_bundles(data)
+    _stamp_transport(page.rows, outbound)
     page.notes.append(
         f"offers from the site's API: {len(page.rows)} rows"
         + (" (the site marks this tour expired)" if data.get("isExpired") else "")
