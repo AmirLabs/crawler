@@ -95,7 +95,24 @@ _GAP = r"[\s" + _ZWNJ + r"]*"
 # Room labels, longest and most specific first so that "کودک بدون تخت" is never
 # read as the "کودک" of "کودک با تخت". Each entry allows both the spelled-out
 # number and the digit, since sites mix them freely.
+# An age band standing in for the room label. liyaseir prices by who sleeps in
+# the bed rather than by what the bed is: "4 الی 12 سال با تخت" instead of
+# "کودک با تخت". The ages say which child and the bed word says which price, so
+# the bed word is what maps and the ages only mark the shape. Tried first,
+# before the plain labels, because they are the longer match.
+_DIGIT = r"[\d۰-۹٠-٩]"
+_AGE_BAND = (
+    r"(?:زیر" + _GAP + r")?" + _DIGIT + r"{1,2}"
+    + r"(?:" + _GAP + r"(?:الی|تا)" + _GAP + _DIGIT + r"{1,2})?" + _GAP + r"سال"
+)
+
 _ROOM_PATTERNS: tuple[tuple[str, str], ...] = (
+    (_AGE_BAND + _GAP + r"بدون" + _GAP + r"تخت", ROOM_CHILD_NO_BED),
+    (_AGE_BAND + _GAP + r"با" + _GAP + r"تخت", ROOM_CHILD_WITH_BED),
+    # "زیر 2 سال" is the infant band. One or two years only: a larger number
+    # under the same wording is a child, and reading it as an infant would put
+    # a child's fare in the infant column.
+    (r"زیر" + _GAP + r"[۱۲١٢12]" + _GAP + r"سال", ROOM_INFANT),
     (r"کودک" + _GAP + r"بدون" + _GAP + r"تخت", ROOM_CHILD_NO_BED),
     (r"کودک" + _GAP + r"با" + _GAP + r"تخت", ROOM_CHILD_WITH_BED),
     (r"(?:نوزاد|اینفنت|انفانت)", ROOM_INFANT),
@@ -155,6 +172,14 @@ def detect_room_type(text: str) -> Optional[str]:
         'double'
         >>> detect_room_type("کودک بدون تخت91٬490٬000 تومان")
         'child_no_bed'
+        >>> detect_room_type("4 الی 12 سال با تخت 2690 دلار")
+        'child_with_bed'
+        >>> detect_room_type("2 الی 4 سال بدون تخت 1690 دلار")
+        'child_no_bed'
+        >>> detect_room_type("زیر 2 سال 190 دلار")
+        'infant'
+        >>> detect_room_type("زیر 12 سال با تخت")
+        'child_with_bed'
         >>> detect_room_type("رفت 03 شهریور 98,000,000 تومان") is None
         True
     """
