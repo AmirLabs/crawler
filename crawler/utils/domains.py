@@ -43,9 +43,16 @@ def sample_domains(count: int = 3, seed: int | None = None) -> list[str]:
     two sites every time looks finished long before it is. Pass ``seed`` when a
     check needs to be repeatable.
 
+    The example seeds the picker and counts, rather than naming the sites it
+    returns: the answer moves whenever ``domains/targets.txt`` does, and it
+    already has — the file went from seven sites to ten.
+
     Example:
-        >>> sample_domains(2, seed=1)
-        ['https://www.alefbatour.com', 'https://liyaseir.com']
+        >>> picked = sample_domains(2, seed=1)
+        >>> len(picked), all(p in load_domains() for p in picked)
+        (2, True)
+        >>> picked == sample_domains(2, seed=1)
+        True
     """
     domains = load_domains()
     if count >= len(domains):
