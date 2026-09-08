@@ -43,7 +43,7 @@ from crawler.extraction.readers.labels import (
     detect_room_type,
     detect_star_rating,
 )
-from crawler.extraction.readers.prices import find_prices
+from crawler.extraction.readers.prices import CURRENCY_WORDS, find_prices
 
 # How far above the rows to look before giving up. Beyond this the ancestors
 # hold the whole page, and their first text is a menu item.
@@ -87,6 +87,10 @@ _NOT_A_NAME = (
     # The meal wording arrives split from its code — "با صبحانه" in one element
     # and "(BB)" in the next — so detect_board_type cannot see it whole.
     "صبحانه",
+    # lachinseir closes its hotel list with the payment terms and the currency
+    # the prices are quoted in, and both read as two more hotels.
+    "شرایط",
+    "اقساط",
 )
 
 _HAS_LETTER = re.compile(r"[^\W\d_]", re.UNICODE)
@@ -97,6 +101,23 @@ _HAS_LETTER = re.compile(r"[^\W\d_]", re.UNICODE)
 # dates yielded "رفت 07 شهریور" and one with a read-more heading yielded
 # "بیشتر بخوانیــد". Both look like data and are not, which is worse than
 # reporting nothing, so a block has to mention lodging to qualify.
+# What is left of a fragment once its digits are gone, when the fragment was
+# never a name: "3 ستاره", "7 شب اقامت", "6 شب و 7 روز". Matched whole, so
+# "هتل پارسه 3 ستاره" keeps its name and is kept.
+_ONLY_A_DURATION = re.compile(r"(?:ستاره|شب|روز|اقامت|و)*")
+
+# What a site prints *about* a hotel in the same breath as its name: the grade
+# and the meal plan. Both already have a column of their own, so carrying them
+# in the name says the same thing twice — vanrosh writes
+# "هتل 4 ستاره (ALL) BABAYLON" where the name is BABAYLON.
+_A_GRADE = re.compile(r"[\d۰-۹٠-٩]+" + r"[\s\u200c]*" + r"ستاره")
+_A_BOARD = re.compile(
+    r"\(?\s*(?<![A-Za-z])(?:B\.?B|H\.?B|F\.?B|U\.?A\.?L|A\.?L\.?L|R\.?O)(?![A-Za-z])\s*\)?",
+    re.I,
+)
+# What is left when a fragment described a hotel without ever naming one.
+_NAMES_NOTHING = re.compile(r"(?:هتل|اقامتگاه|هاستل|مهمانپذیر|ویلا|hotel|resort|hostel)*", re.I)
+
 _HOTEL_WORDS = (
     "هتل",
     "اقامتگاه",
@@ -174,6 +195,20 @@ def _looks_like_a_name(text: str) -> bool:
         False
         >>> _looks_like_a_name("BB با صبحانه")
         False
+        >>> _looks_like_a_name("تور دبی")
+        False
+        >>> _looks_like_a_name("7 شب اقامت")
+        False
+        >>> _looks_like_a_name("شهر: کوالالامپور")
+        False
+        >>> _looks_like_a_name("هتل ASTO")
+        True
+        >>> _looks_like_a_name("دلار")
+        False
+        >>> _looks_like_a_name("هتل 4 ستاره")
+        False
+        >>> _looks_like_a_name("هتل 4 ستاره (ALL) BABAYLON")
+        True
     """
     if not (_MIN_NAME_CHARS <= len(text) <= _MAX_NAME_CHARS):
         return False
@@ -198,12 +233,53 @@ def _looks_like_a_name(text: str) -> bool:
         word in text.lower() for word in _HOTEL_WORDS
     ):
         return False
+    # A tour is not a hotel. tahagasht heads its page "تور دبی هتل آدرس بیچ
+    # ریزورت", which names lodging and so passes every test above, and the
+    # first thing printed under it is the tour's own name.
+    if text.split()[0] == "تور":
+        return False
+    # A colon separates a caption from its value. chakavaktravel prints
+    # "شهر: کوالالامپور" beside the hotel it belongs to, and that read as a
+    # second hotel and was joined to the first. A hotel does not punctuate
+    # its own name.
+    if ":" in text or "：" in text:
+        return False
+    # A currency standing on its own is what the prices are quoted in, not a
+    # hotel. It survives every other test because it carries no digit.
+    if text.strip() in CURRENCY_WORDS:
+        return False
     # A fragment that is nothing but a rating or a duration is a label, but one
     # that carries them alongside a name ("هتل پارسه 3 ستاره") is still a name.
+    # "7 شب اقامت" is the whole of the stay's length and none of its name.
     stripped = re.sub(r"[\d۰-۹٠-٩\s:،,.]+", "", text)
-    if stripped in ("ستاره", "شب", "روز", ""):
+    if _ONLY_A_DURATION.fullmatch(stripped):
         return False
-    return True
+    # A fragment that grades a hotel without naming one is not a name.
+    # lachinseir prints "هتل 4 ستاره" where it has no name to print, and
+    # sending that on says the tour sleeps at a hotel called "هتل 4 ستاره".
+    if not _NAMES_NOTHING.fullmatch(re.sub(r"[^\w]|[\d۰-۹٠-٩_]", "", name_only(text))):
+        return True
+    return False
+
+
+def name_only(text: str) -> str:
+    """A hotel's name with the grade and meal plan printed beside it removed.
+
+    Both have a column of their own, so keeping them here repeats them and
+    hides the name behind them. What is not a grade or a plan is left exactly
+    as the page wrote it.
+
+    Example:
+        >>> name_only("هتل 4 ستاره (ALL) BABAYLON")
+        'هتل BABAYLON'
+        >>> name_only("هتل 3 ستاره KEMER STAR (B.B)")
+        'هتل KEMER STAR'
+        >>> name_only("هتل 4 ستاره")
+        'هتل'
+        >>> name_only("Kemer Star Hotel")
+        'Kemer Star Hotel'
+    """
+    return _clean(_A_BOARD.sub(" ", _A_GRADE.sub(" ", text)))
 
 
 @dataclass
@@ -358,8 +434,8 @@ def read_hotel_block(container: RowContainer) -> HotelBlock:
         if not _looks_like_a_name(own):
             open_run = False
             continue
-        if not open_run and own not in names:
-            names.append(own)
+        if not open_run and name_only(own) not in names:
+            names.append(name_only(own))
         open_run = True
     name = " + ".join(names) if names else None
 
