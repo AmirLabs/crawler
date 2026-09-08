@@ -39,6 +39,7 @@ from crawler.extraction.models import (
     METHOD_HEURISTIC_HTML,
     ExtractedField,
     ExtractedRow,
+    record_attempt,
 )
 from crawler.extraction.readers.labels import detect_room_type, detect_star_rating
 from crawler.extraction.readers.prices import CURRENCY_WORDS, normalize_digits
@@ -68,6 +69,12 @@ _MIN_ROWS = 1
 _CURRENCY_WORD = re.compile("|".join(CURRENCY_WORDS))
 
 _SOURCE = f"{METHOD_HEURISTIC_HTML}:rates_table"
+
+# A rates table prices a room; it never says when the tour leaves. Saying so is
+# the point: without it tahagasht's table pages reported "nothing looked for
+# it" on four of five pages, which reads as a rule that was never written when
+# the truth is a table that has no such column.
+_NOT_IN_A_RATES_TABLE = ("departure_date", "return_date")
 
 
 @dataclass
@@ -257,9 +264,14 @@ def read_rates_table(
                 if value not in (None, ""):
                     fields[name] = ExtractedField(value, METHOD_HEURISTIC_HTML, _SOURCE)
 
+            attempts: dict[str, list[str]] = {}
+            for name in _NOT_IN_A_RATES_TABLE:
+                record_attempt(attempts, name, _SOURCE)
+
             rows.append(
                 ExtractedRow(
                     fields=fields,
+                    attempts=attempts,
                     unresolved_fields=unresolved(fields, ROW_FIELDS),
                     source_path=source_path or "table.rates",
                     index=len(rows),
