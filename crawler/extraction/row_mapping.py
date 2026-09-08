@@ -68,6 +68,7 @@ _RETURN_LABELS = ("برگشت", "بازگشت", "return")
 _ROW_TEXT_SCOPE = f"{METHOD_HEURISTIC_HTML}:row_text"
 _HOTEL_BLOCK_SCOPE = f"{METHOD_HEURISTIC_HTML}:hotel_block"
 _ATTRIBUTE_SCOPE = f"{METHOD_HEURISTIC_HTML}:data_attribute"
+_HEADING_ROW_SCOPE = f"{METHOD_HEURISTIC_HTML}:heading_row"
 
 # A Jalali date written as an attribute value: "1405-06-19". Any ``data-*``
 # holding one is read, whatever it is named, because the name is the site's
@@ -301,6 +302,7 @@ def map_rows(container: RowContainer) -> list[ExtractedRow]:
         ['double', 'single']
     """
     block = read_hotel_block(container)
+    headings = _heading_row(container)
 
     rows: list[ExtractedRow] = []
     for index, text in enumerate(container.texts()):
@@ -310,8 +312,54 @@ def map_rows(container: RowContainer) -> list[ExtractedRow]:
         _apply_hotel_block(row, block)
         if index < len(container.members):
             _apply_attribute_dates(row, container.members[index])
+        if "room_type" not in row.fields and index < len(headings):
+            row.fields["room_type"] = ExtractedField(
+                headings[index], METHOD_HEURISTIC_HTML, _HEADING_ROW_SCOPE
+            )
+            row.attempts.pop("room_type", None)
+            row.unresolved_fields = unresolved(row.fields, ROW_FIELDS)
         rows.append(row)
     return rows
+
+
+def _heading_row(container: RowContainer) -> list[str]:
+    """The room labels a block prints once above its prices, one per member.
+
+    A rates table names its columns in a header and its rows say only the
+    figures. Written with a table that is obvious; written with a grid it looks
+    like any other block, and nahalgasht writes it with a grid — four labels
+    and then four unlabelled prices, all children of one element. Read row by
+    row those pages carry a price and nothing to file it under, which is why
+    single, child and infant all sat at 0% there while the page named them.
+
+    The labels have to be the whole run before the prices and to number exactly
+    as many as there are prices. Anything else is a coincidence of layout, and
+    pairing on a coincidence would put the child's fare in the single column.
+
+    Example:
+        >>> from selectolax.parser import HTMLParser
+        >>> from crawler.extraction.structure.html_rows import find_row_containers
+        >>> tree = HTMLParser(
+        ...     '<div class="grid"><div>دو تخته</div><div>یک تخته</div>'
+        ...     '<div class="c">92,000,000 تومان</div>'
+        ...     '<div class="c">99,000,000 تومان</div></div>'
+        ... )
+        >>> _heading_row(find_row_containers(tree)[0])
+        ['double', 'single']
+    """
+    if not container.members:
+        return []
+    parent = container.members[0].parent
+    if parent is None:
+        return []
+
+    labels: list[str] = []
+    for child in parent.iter():
+        room = detect_room_type(" ".join((child.text(deep=True) or "").split()))
+        if room is None:
+            break  # the header has ended; what follows is the prices
+        labels.append(room)
+    return labels if len(labels) == len(container.members) else []
 
 
 def _dates_in_attributes(node) -> list[str]:
