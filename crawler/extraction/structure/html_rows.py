@@ -38,6 +38,7 @@ from urllib.parse import unquote, urlparse
 from selectolax.parser import HTMLParser, Node
 
 from crawler.extraction.readers.labels import names_other_tours
+from crawler.extraction.readers.labels import detect_room_type
 from crawler.extraction.readers.prices import find_prices
 
 # Elements that never hold page content worth reading as a row.
@@ -158,8 +159,50 @@ def _with_stragglers(members: list[Node], order: list[Node]) -> list[Node]:
             continue
         taken.append(node)
 
-    taken.sort(key=lambda node: order.index(node))
+    taken += _promoted_row(members[0])
+    taken.sort(key=_document_position)
     return taken
+
+
+def _promoted_row(member: Node) -> list[Node]:
+    """The row a card lifts out of the grid the others sit in.
+
+    A headline price is often displayed wider than the rest, which in a grid
+    layout means moving it out of the grid — so it becomes a sibling of the
+    container the rows live in, one level above them, and no rule that walks
+    the rows can see it. chakavaktravel does this with the double room, the
+    price everything else is compared against: 493 objects went out with every
+    other room priced and that one at zero.
+
+    Judged on what it holds rather than on how it is styled, because the
+    styling is the whole reason it is somewhere else: it has to name a room and
+    carry a price, and be the element immediately before or after the rows' own
+    container. Anything further away belongs to another card.
+
+    Example:
+        >>> tree = HTMLParser(
+        ...     '<div class="card"><div class="wide">دو تخته 89,450,000 تومان</div>'
+        ...     '<div class="grid"><div class="r">یک تخته 106,700,000 تومان</div>'
+        ...     '<div class="r">کودک با تخت 57,250,000 تومان</div></div></div>')
+        >>> rows = find_row_containers(tree)[0]
+        >>> [t[:9] for t in rows.texts()]
+        ['دو تخته 8', 'یک تخته 1', 'کودک با ت']
+    """
+    holder = member.parent
+    if holder is None:
+        return []
+
+    beside: list[Node] = []
+    for step in ("prev", "next"):
+        sibling = getattr(holder, step)
+        while sibling is not None and sibling.tag in ("-text", "-undef"):
+            sibling = getattr(sibling, step)
+        if sibling is None or sibling.tag in _SKIP_TAGS:
+            continue
+        text = sibling.text(deep=True) or ""
+        if detect_room_type(text) and find_prices(text):
+            beside.append(sibling)
+    return beside
 
 
 def _element_path(node: Node, max_depth: int = 4) -> str:
