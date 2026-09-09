@@ -241,11 +241,14 @@ def _nights_between(departure: TourDate, ret: TourDate) -> Optional[int]:
     return nights if 1 <= nights <= 60 else None
 
 
-def _group_key(row: ExtractedRow) -> tuple[Optional[str], Optional[str]]:
+def _group_key(row: ExtractedRow) -> tuple[Optional[str], Optional[str], Optional[int]]:
     """What makes two rows the same bookable option.
 
-    The departure date and the hotel are what a customer books; the room type
-    is what they choose *within* it, so it is deliberately not part of the key.
+    The departure date, the hotel and how long the stay is. The room type is
+    what a customer chooses *within* an option, so it is deliberately not part
+    of the key; the length is not — nahalgasht sells the same hotel on the same
+    date for two nights and for three at different prices, and with the length
+    out of the key the second folded into the first and was lost.
 
     Example:
         >>> from crawler.extraction.models import ExtractedField, METHOD_HEURISTIC_HTML
@@ -254,14 +257,14 @@ def _group_key(row: ExtractedRow) -> tuple[Optional[str], Optional[str]]:
         ...     "room_type": ExtractedField("double", METHOD_HEURISTIC_HTML),
         ... })
         >>> _group_key(row)
-        ('2026-08-29', None)
+        ('2026-08-29', None, None)
     """
     departure = _value(row.fields, "departure_date")
     if isinstance(departure, dict):
         date_key = departure.get("iso") or departure.get("raw")
     else:
         date_key = departure
-    return date_key, _value(row.fields, "hotel_name")
+    return date_key, _value(row.fields, "hotel_name"), _value(row.fields, "nights")
 
 
 def _impossible(departure: TourDate, ret: TourDate) -> bool:
