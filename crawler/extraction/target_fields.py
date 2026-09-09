@@ -35,6 +35,11 @@ PAGE_FIELDS: tuple[str, ...] = (
     # :class:`crawler.schema.output_models.Tour`.
     "destination",
     "destinations",
+    # The country over those cities, which no page states in its text and
+    # every one of them states in its filing. See
+    # :mod:`crawler.extraction.readers.countries`.
+    "destination_country",
+    "destination_country_latin",
     "transportation_type",
     "image_url",
     "is_installment_available",

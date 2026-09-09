@@ -393,6 +393,12 @@ class Tour:
     destination: Optional[str] = None   # as written: "بالی + سنگاپور"
     destinations: list[str] = field(default_factory=list)  # ["بالی", "سنگاپور"]
 
+    # The country those cities are in, under both names. The client's second
+    # structure asks for both and no page writes either in its text — they come
+    # from where the site files the tour. The latin one has no other source.
+    destination_country: Optional[str] = None        # "ترکیه"
+    destination_country_latin: Optional[str] = None  # "turkey"
+
     # A TRANSPORT_* value, and the home of this fact. It is one value for the
     # whole page: nahalgasht publishes it as a page level taxonomy, and a page
     # of 4 dates x 7 hotels would otherwise repeat "air" 28 times. Bus and train
@@ -434,6 +440,8 @@ class Tour:
                 # The searchable form. Kept a list rather than joined, so a
                 # multi-city tour can be found by any one of its stops.
                 "destinations": list(self.destinations),
+                "destination_country": self.destination_country,
+                "destination_country_latin": self.destination_country_latin,
                 # Page level value, unless this one departure overrode it.
                 "transportation_type": (
                     (offer.transport.transportation_type if offer.transport else None)
