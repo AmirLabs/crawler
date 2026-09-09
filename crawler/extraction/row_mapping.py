@@ -33,7 +33,14 @@ from typing import Optional
 
 from selectolax.parser import HTMLParser
 
-from crawler.extraction.structure.hotel_block import HotelBlock, read_hotel_block
+from crawler.extraction.structure.hotel_block import (
+    _HOTEL_WORDS,
+    _clean,
+    _looks_like_a_name,
+    HotelBlock,
+    name_only,
+    read_hotel_block,
+)
 from crawler.extraction.structure.html_rows import RowContainer
 from crawler.extraction.models import (
     METHOD_HEURISTIC_HTML,
@@ -92,6 +99,7 @@ _BLOCK_FIELDS: tuple[tuple[str, str], ...] = (
 )
 _ATTEMPTED_FIELDS: tuple[str, ...] = (
     "room_type",
+    "hotel_name",
     "hotel_star_rating",
     "board_type",
     "nights",
@@ -99,6 +107,62 @@ _ATTEMPTED_FIELDS: tuple[str, ...] = (
     "return_date",
     "price",
 )
+
+
+# Where a hotel's name ends inside a row: at a number, or at the next thing the
+# row says about it. Anything after the name belongs to the offer, not to the
+# hotel — its position, the nights on sale, the price, the button.
+# The Latin words a name is made of, taken from the end of what comes before
+# the lodging word.
+_LATIN_WORDS = re.compile(r"([A-Za-z][A-Za-z&'.\-]*(?:\s+[A-Za-z][A-Za-z&'.\-]*){0,3})\s*$")
+
+_AFTER_A_NAME = re.compile(
+    r"[\d۰-۹٠-٩]|موقعیت|رزرو|جزئیات|مشاهده|قیمت|شب|ستاره|خدمات"
+    r"|تخته|نفره|کودک|نوزاد|اتاق|(?<![آ-ی])(?:دو|یک|سه|تک)(?![آ-ی])"
+)
+
+
+def _hotel_in(text: str) -> Optional[str]:
+    """The hotel a row names for itself, where the row is the whole offer.
+
+    Read here and not only from the block above, because on some sites there is
+    no block above: nahalgasht sells five Mashhad hotels as five rows, each
+    naming its own, and with no name on any of them build_tour grouped all five
+    into one offer and kept the cheapest. Four hotels and four prices went out
+    of the output without a trace.
+
+    The name runs from the lodging word to the first thing that cannot be part
+    of it. What comes back is checked the same way a block's name is, so a row
+    that only mentions lodging in passing yields nothing.
+
+    Example:
+        >>> _hotel_in("پیشنهاد ویژه2 ستارههتل انقلاب موقعیت مکانی2 شب 8,200,000تومان")
+        'هتل انقلاب'
+        >>> _hotel_in("6 شب اقامتBBشهر: کوش آداسیهتل MELIKE جزئیات بیشتر")
+        'هتل MELIKE'
+        >>> _hotel_in("Kemer Star Hotel دو تخته 55,000,000 تومان")
+        'Kemer Star Hotel'
+        >>> _hotel_in("دو تخته 92,000,000 تومان") is None
+        True
+    """
+    low = text.lower()
+    for word in _HOTEL_WORDS:
+        at = low.find(word)
+        while at >= 0:
+            here = text[at: at + len(word)]
+            rest = text[at + len(word):]
+            end = _AFTER_A_NAME.search(rest)
+            name = _clean(here + rest[: end.start() if end else None])
+            # A Latin name is written before the word — "Kemer Star Hotel" —
+            # and a Persian one after it, so the Latin case reaches backwards.
+            if word.isascii():
+                before = _LATIN_WORDS.search(text[:at])
+                if before:
+                    name = _clean(before.group(1) + " " + name)
+            if _looks_like_a_name(name) and name.strip().lower() != word:
+                return name_only(name)
+            at = low.find(word, at + 1)
+    return None
 
 
 def _find_return_marker(text: str) -> Optional[int]:
@@ -198,8 +262,8 @@ def map_row_text(
         'double'
         >>> row.attempts["departure_date"]
         ['heuristic_html:row_text']
-        >>> "hotel_name" in row.attempts   # nothing looks for it yet
-        False
+        >>> row.attempts["hotel_name"]   # looked for, and this row names none
+        ['heuristic_html:row_text']
     """
     text = " ".join(text.split())
     fields: dict[str, ExtractedField] = {}
@@ -218,6 +282,7 @@ def map_row_text(
     record("hotel_star_rating", detect_star_rating(text))
     record("board_type", detect_board_type(text))
     record("nights", detect_nights(text))
+    record("hotel_name", _hotel_in(text))
 
     # --- dates ------------------------------------------------------------- #
     departure, return_ = _assign_dates(text, find_dates(text))
