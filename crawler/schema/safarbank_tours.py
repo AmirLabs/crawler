@@ -31,6 +31,7 @@ from __future__ import annotations
 from typing import Optional
 
 from crawler.extraction.readers.places import is_a_departure_city
+from crawler.schema.agencies import agency_info, agency_name
 from crawler.schema.identifiers import PROVIDER_ID, IdStore
 from crawler.schema.safarbank import CURRENCY_NAMES, packed_date, to_jalali_parts
 from crawler.schema.output_models import (
@@ -253,7 +254,7 @@ def offer_to_listing(tour: Tour, offer: TourOffer, ids: IdStore) -> dict:
     return {
         "api_id": f"{row}-{same}-{packed}",
         "provider_id": str(PROVIDER_ID),
-        "agency_name": tour.agency.name or "",
+        "agency_name": agency_name(tour.tour_url, tour.agency.name),
         "id": row,
         "id_same": "",
         "tour_name": tour.tour_name or "",
@@ -308,13 +309,8 @@ def offer_to_listing(tour: Tour, offer: TourOffer, ids: IdStore) -> dict:
             _leg(tour, offer, True, 1, row, ids.row_id()),
             _leg(tour, offer, False, 2, row, ids.row_id()),
         ],
-        "agency_info": {
-            "AgencyName": tour.agency.name or "",
-            "Address": "",
-            "Phone": "",
-            "Mobile": "",
-            "Logo": tour.agency.logo_url or "",
-        },
+        "agency_info": agency_info(
+            tour.tour_url, tour.agency.name, tour.agency.logo_url),
     }
 
 

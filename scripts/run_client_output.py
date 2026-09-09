@@ -8,7 +8,9 @@ side, from one crawl, so the two can be read against each other::
     logs/client/summary.txt             what was crawled, and what came out
 
 Every site goes into the same two files, because that is what the client is
-sent. Which agency a row came from is inside the row, in ``agency_name``.
+sent. Which agency a row came from is inside the row in the second structure —
+``agency_name`` and the ``agency_info`` block — and nowhere yet in the first,
+which carries no agency key of its own.
 
 The grains differ on purpose. The first structure is the catalogue — every room
 of every hotel on every date, which is what a person books. The second is a
