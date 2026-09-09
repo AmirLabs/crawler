@@ -13,8 +13,11 @@ three things that the field names alone do not:
   is their own number for the tour and ``id`` is the departure; their developer
   asked for ``id_same`` empty, since a number of ours means nothing on their
   side, so ``api_id`` carries the empty middle they expect.
-* **``api_id`` is built, not stored.** It is ``id-id_same-startdate`` with the
-  date packed, on 22 of 22 rows.
+* **``api_id`` is built, not stored.** Their sample reads
+  ``id-id_same-startdate`` on 22 of 22 rows, but their developer asked for the
+  package first: ``tour_code-id-startdate``, with the date packed. A page that
+  states no departure date gets :data:`NO_DEPARTURE` there, so the id is never
+  sent with a part missing.
 * **A night is a night.** ``end_date`` minus ``start_date`` equals ``night`` on
   every row, and ``day`` is ``night`` plus one. Their own data settles the
   question issue #2 asked of ours.
@@ -91,6 +94,9 @@ TOUR_TYPE_IDS: dict[str, str] = {
 # sample with any confidence: origin_country_id is "1" on all 22 rows and every
 # one of them leaves from Tehran.
 IRAN_COUNTRY_ID = "1"
+
+# Stands in for a missing departure inside api_id only, never in start_date.
+NO_DEPARTURE = "14000101"
 
 # The rooms an adult can be sold. A child's or an infant's fare is cheaper and
 # is not what a tour starts from.
@@ -226,28 +232,32 @@ def _leg(
     }
 
 
-# Every row we send was read off somebody else's site, so this never varies.
-# It is here as a key rather than left implied because their side stores rows
-# from several kinds of provider and has to tell ours apart.
 IS_EXTERNAL = True
 
 
 def _source(page_url: str) -> dict:
-    """Where a listing was read: the site, and the page on it.
-
-    The file holds all ten agencies together and no other key says in one place
-    which one a row came from. ``tour_detail_address`` carries the same URL
-    under their name for it; this block is ours and says it plainly.
-
-    Example:
-        >>> _source("https://www.tahagasht.com/tours/item/antalya-tour")
-        {'website': 'tahagasht.com', 'page_url': 'https://www.tahagasht.com/tours/item/antalya-tour', 'is_external': True}
-    """
     return {
         "website": host_of(page_url),
         "page_url": page_url,
         "is_external": IS_EXTERNAL,
     }
+
+
+def _packed_start(offer: TourOffer) -> str:
+    """The departure their id is built on, packed, with a stand-in where none.
+
+    Half the sites never print a departure, and those ids ended in a bare dash.
+    A past date fills them: expired departures are dropped, so no live listing
+    can carry it, and unlike the crawl day it does not change every night.
+
+    Example:
+        >>> from crawler.schema.output_models import TourDate
+        >>> _packed_start(TourOffer(departure=TourDate(iso="2026-09-12")))
+        '14050621'
+        >>> _packed_start(TourOffer())
+        '14000101'
+    """
+    return packed_date(to_jalali_parts(offer.departure.iso)) or NO_DEPARTURE
 
 
 def offer_to_listing(tour: Tour, offer: TourOffer, ids: IdStore) -> dict:
@@ -264,19 +274,19 @@ def offer_to_listing(tour: Tour, offer: TourOffer, ids: IdStore) -> dict:
         ...     ret=TourDate(iso="2026-09-19", jalali="1405-06-28"))
         >>> out = offer_to_listing(tour, offer, IdStore(path=None))
         >>> out["api_id"], out["night"], out["day"]
-        ('1-31540001-14050621', '7', '8')
+        ('31540001-1-14050621', '7', '8')
         >>> out["start_date"], out["end_date"], out["exit_hours"]
         ('1405-06-21', '1405-06-28', '22:45')
     """
     same = ids.tour_code(tour.tour_url)
-    packed = packed_date(to_jalali_parts(offer.departure.iso))
+    packed = _packed_start(offer)
     row = ids.fk_tour_id(same, packed)
     price, foreign, currency = _price_parts(offer)
     vehicle = VEHICLE_NAMES.get(tour.transportation_type or "", "")
     airline = (offer.transport.name if offer.transport else "") or ""
 
     return {
-        "api_id": f"{row}-{same}-{packed}",
+        "api_id": f"{same}-{row}-{packed}",
         "provider_id": str(PROVIDER_ID),
         "agency_name": agency_name(tour.tour_url, tour.agency.name),
         "id": row,
