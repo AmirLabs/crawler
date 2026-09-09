@@ -3,9 +3,12 @@
 They asked for two shapes of the same catalogue and this writes them side by
 side, from one crawl, so the two can be read against each other::
 
-    logs/client/<site>.first.json     one object per date, hotel and room
-    logs/client/<site>.second.json    one object per date, with a "from" price
-    logs/client/<site>.txt            what was crawled, and what came out
+    logs/client/first_structure.json    one object per date, hotel and room
+    logs/client/second_structure.json   one object per date, with a "from" price
+    logs/client/summary.txt             what was crawled, and what came out
+
+Every site goes into the same two files, because that is what the client is
+sent. Which agency a row came from is inside the row, in ``agency_name``.
 
 The grains differ on purpose. The first structure is the catalogue — every room
 of every hotel on every date, which is what a person books. The second is a
@@ -59,7 +62,7 @@ from crawler.utils.domains import load_domains
 LOGS = PROJECT_ROOT / "logs"
 OUT = LOGS / "client"
 
-DEFAULT_PAGES = 10
+DEFAULT_PAGES = 3
 
 # How many URLs may be opened for each page wanted. Nine of tahagasht's first
 # ten tries answer 404 because its sitemap still lists departures it has taken
@@ -167,46 +170,58 @@ async def crawl_site(domain: str, pages: int, ids: IdStore) -> dict:
     return result
 
 
-def write_site(result: dict) -> None:
-    """The two JSON files for one site, and a note saying what is in them."""
-    name = result["name"]
-    (OUT / f"{name}.first.json").write_text(
-        json.dumps(result["first"], ensure_ascii=False, indent=2), encoding="utf-8"
+def write_everything(results: list[dict]) -> None:
+    """Both files, with every site inside them, plus a note on what was crawled.
+
+    One file per structure and not one per site, because that is what the
+    client is sent: their catalogue is the ten agencies together, and a reader
+    who has to open ten files to see it cannot tell whether a tour is missing
+    or in the file they have not opened yet.
+
+    The sites are told apart inside the data, not by the filename —
+    ``agency_name`` in both structures, and ``website_url`` in the first.
+    """
+    first = [obj for result in results for obj in result["first"]]
+    second = [obj for result in results for obj in result["second"]]
+
+    (OUT / "first_structure.json").write_text(
+        json.dumps(first, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    (OUT / f"{name}.second.json").write_text(
-        json.dumps(listing_document(result["second"]), ensure_ascii=False, indent=2),
+    (OUT / "second_structure.json").write_text(
+        json.dumps(listing_document(second), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
-    codes_first = {o.get("tour_code") for o in result["first"]}
-    codes_second = {o.get("tour_code") for o in result["second"]}
+    codes_first = {obj.get("tour_code") for obj in first}
+    codes_second = {obj.get("tour_code") for obj in second}
     lines = [
-        f"{result['domain']} — what the two files hold",
+        "what the two files hold",
         f"crawled {_stamp()}",
         "",
-        f"   tours kept        {len(result['kept'])}",
-        f"   URLs skipped      {len(result['skipped'])}",
-        f"   first structure   {len(result['first'])} objects,"
+        f"   first_structure.json    {len(first)} objects,"
         f" {len(codes_first)} tour codes",
-        f"   second structure  {len(result['second'])} objects,"
+        f"   second_structure.json   {len(second)} objects,"
         f" {len(codes_second)} tour codes",
-        f"   codes in both     {len(codes_first & codes_second)}",
+        f"   codes in both           {len(codes_first & codes_second)}",
         "",
+        f"{'site':18}{'tours':>7}{'skipped':>9}{'first':>8}{'second':>8}",
+        "=" * 78,
     ]
-    for note in result["notes"]:
-        lines.append(f"   note  {note}")
-    if result["notes"]:
-        lines.append("")
-
-    lines += ["the tours that sold", "=" * 78]
-    for kept in result["kept"]:
-        lines.append(f"   {kept['tour_code']}  {kept['first']:>4} first"
-                     f"  {kept['second']:>3} second   {kept['url']}")
-    if result["skipped"]:
-        lines += ["", "the URLs that gave nothing", "=" * 78]
+    for result in results:
+        lines.append(
+            f"   {result['name']:15}{len(result['kept']):>7}"
+            f"{len(result['skipped']):>9}{len(result['first']):>8}"
+            f"{len(result['second']):>8}"
+        )
+    for result in results:
+        if not (result["notes"] or result["skipped"]):
+            continue
+        lines += ["", f"{result['domain']}"]
+        for note in result["notes"]:
+            lines.append(f"   note  {note}")
         for entry in result["skipped"]:
-            lines.append(f"   {entry['why']:<28} {entry['url']}")
-    (OUT / f"{name}.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+            lines.append(f"   skipped  {entry['why']:<26} {entry['url']}")
+    (OUT / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 async def main(domain: Optional[str], pages: int) -> None:
@@ -225,6 +240,7 @@ async def main(domain: Optional[str], pages: int) -> None:
     ids = IdStore(path=None)
 
     started = time.monotonic()
+    results: list[dict] = []
     for index, site in enumerate(domains, start=1):
         print(f"\n[{index}/{len(domains)}] {site}", flush=True)
         try:
@@ -232,9 +248,12 @@ async def main(domain: Optional[str], pages: int) -> None:
         except Exception as error:  # one site must not take the others with it
             print(f"  FAILED: {type(error).__name__}: {error}", flush=True)
             continue
-        write_site(result)
+        results.append(result)
+        # Written after every site, so a run stopped halfway still leaves both
+        # files holding everything crawled up to that point.
+        write_everything(results)
         print(f"  -> {len(result['first'])} first, {len(result['second'])} second"
-              f"  written to {OUT}", flush=True)
+              f"  ({sum(len(r['first']) for r in results)} in the file)", flush=True)
 
     print(f"\ndone in {time.monotonic() - started:.0f}s, files in {OUT}")
 
