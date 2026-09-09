@@ -10,8 +10,9 @@ three things that the field names alone do not:
 
 * **The grain is tour × departure.** Twenty-two objects carry eight distinct
   ``tour_name``s: one tour appears once for each date it leaves on. ``id_same``
-  is the tour and ``id`` is the departure, which is exactly the pair
-  :class:`~crawler.schema.identifiers.IdStore` already mints.
+  is their own number for the tour and ``id`` is the departure; their developer
+  asked for ``id_same`` empty, since a number of ours means nothing on their
+  side, so ``api_id`` carries the empty middle they expect.
 * **``api_id`` is built, not stored.** It is ``id-id_same-startdate`` with the
   date packed, on 22 of 22 rows.
 * **A night is a night.** ``end_date`` minus ``start_date`` equals ``night`` on
@@ -68,6 +69,22 @@ TOUR_TYPE_FOREIGN = "تور خارجی"
 TOUR_TYPE_DOMESTIC = "تور داخلی"
 TOUR_TYPE_MULTI_DAY = "تور چند روزه"
 
+# Their numbers for the tags, confirmed by their developer. Read off their own
+# sample, where each id carried one name on all 22 rows and never a second.
+# The four we do not set are here so the table stays whole: three are the
+# agency's own judgement, and "آسیایی" wants a country we do not read yet.
+TOUR_TYPE_IDS: dict[str, str] = {
+    TOUR_TYPE_MULTI_DAY: "2",
+    "زمینی": "3",
+    "پرطرفدار": "4",
+    "هوایی": "5",
+    "آسیایی": "8",
+    TOUR_TYPE_DOMESTIC: "9",
+    "راهنما": "12",
+    TOUR_TYPE_FOREIGN: "16",
+    "تور اقساطی": "17",
+}
+
 # Iran, in their country table. The only id of theirs we can read off their
 # sample with any confidence: origin_country_id is "1" on all 22 rows and every
 # one of them leaves from Tehran.
@@ -121,23 +138,24 @@ def _price_parts(offer: TourOffer) -> tuple[int, str, str]:
     return int(cheapest.local.amount), amount, name
 
 
-def _tour_types(tour: Tour, offer: TourOffer) -> Optional[list[dict]]:
+def _tour_types(tour: Tour, offer: TourOffer) -> list[dict]:
     """The tags that follow from what was read, and no others.
 
-    ``None`` where nothing could be told, which is what their own developer
-    asked for. Their sample never shows the empty case — all 22 rows carry at
-    least two tags — so this is their word, not a shape read off the data.
+    An empty list where nothing could be told. Their sample never shows that
+    case — all 22 rows carry at least two tags — so this is their developer's
+    word, asked for by phone, and not a shape read off the data.
 
     Example:
         >>> tour = Tour(tour_url="u", origin="تهران", destination="پاتایا",
         ...             transportation_type="air")
-        >>> [t["name"] for t in _tour_types(tour, TourOffer(nights=7))]
-        ['هوایی', 'تور خارجی', 'تور چند روزه']
+        >>> _tour_types(tour, TourOffer(nights=7))
+        [{'id': '5', 'name': 'هوایی'}, {'id': '16', 'name': 'تور خارجی'},
+         {'id': '2', 'name': 'تور چند روزه'}]
         >>> tour.transportation_type = None
         >>> [t["name"] for t in _tour_types(tour, TourOffer(nights=1))]
         ['تور خارجی']
-        >>> _tour_types(Tour(tour_url="u"), TourOffer()) is None
-        True
+        >>> _tour_types(Tour(tour_url="u"), TourOffer())
+        []
     """
     names: list[str] = []
     tag = VEHICLE_TAGS.get(tour.transportation_type or "")
@@ -150,7 +168,7 @@ def _tour_types(tour: Tour, offer: TourOffer) -> Optional[list[dict]]:
         )
     if offer.nights and offer.nights > 1:
         names.append(TOUR_TYPE_MULTI_DAY)
-    return [{"id": "", "name": name} for name in names] or None
+    return [{"id": TOUR_TYPE_IDS.get(name, ""), "name": name} for name in names]
 
 
 def _leg(
@@ -236,7 +254,7 @@ def offer_to_listing(tour: Tour, offer: TourOffer, ids: IdStore) -> dict:
         "provider_id": str(PROVIDER_ID),
         "agency_name": tour.agency.name or "",
         "id": row,
-        "id_same": same,
+        "id_same": "",
         "tour_name": tour.tour_name or "",
         "tour_name_en": "",
         "tour_detail_address": tour.tour_url,
