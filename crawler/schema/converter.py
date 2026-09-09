@@ -327,6 +327,45 @@ def _return_from_nights(departure: TourDate, nights: Optional[int]) -> Optional[
     )
 
 
+def _hotels_named(
+    name: Optional[Any],
+    city: Optional[Any],
+    star_rating: Optional[Any],
+    board_type: Optional[Any],
+    nights: Optional[int],
+) -> list[Hotel]:
+    """One hotel per hotel, out of the one string the markup path joins them into.
+
+    :func:`crawler.extraction.structure.hotel_block.read_hotel_block` joins the
+    hotels of a multi-city stay with a plus, because a row has one field to put
+    them in. The client's schema has a list, and sending four hotels as one
+    name loses every one of them: lachinseir's Asia tour arrived as a single
+    hotel called "IMPIANA HOTEL + MERCURE MAKKASAN + AYUNG RESORT + MAMAKA".
+
+    The grade, the board and the nights are not split with the name. They were
+    read once for the stay and there is nothing in the markup saying which
+    hotel each belongs to, so they stay on the first and the rest carry only
+    what the page actually named.
+
+    Example:
+        >>> [h.name for h in _hotels_named("A + B", None, 4, "BB", 6)]
+        ['A', 'B']
+        >>> [(h.star_rating, h.nights) for h in _hotels_named("A + B", None, 4, "BB", 6)]
+        [(4, 6), (None, None)]
+        >>> [h.name for h in _hotels_named("Kemer Star Hotel", None, None, None, 3)]
+        ['Kemer Star Hotel']
+    """
+    parts = [part.strip() for part in str(name).split(" + ")] if name else []
+    parts = [part for part in parts if part]
+    if len(parts) < 2:
+        return [Hotel(name=name, city=city, star_rating=star_rating,
+                      board_type=board_type, nights=nights)]
+    return [Hotel(name=parts[0], city=city, star_rating=star_rating,
+                  board_type=board_type, nights=nights)] + [
+        Hotel(name=part) for part in parts[1:]
+    ]
+
+
 def _build_offer(
     rows: list[ExtractedRow], nights_from_name: Optional[int] = None
 ) -> TourOffer:
@@ -384,15 +423,13 @@ def _build_offer(
             if isinstance(stay, dict)
         ]
     else:
-        hotels = [
-            Hotel(
-                name=_value(first, "hotel_name"),
-                city=_value(first, "hotel_city"),
-                star_rating=_value(first, "hotel_star_rating"),
-                board_type=_value(first, "board_type"),
-                nights=nights,
-            )
-        ]
+        hotels = _hotels_named(
+            _value(first, "hotel_name"),
+            city=_value(first, "hotel_city"),
+            star_rating=_value(first, "hotel_star_rating"),
+            board_type=_value(first, "board_type"),
+            nights=nights,
+        )
 
     transport_name = _value(first, "transport_name")
     transport_duration = _value(first, "transport_duration")
