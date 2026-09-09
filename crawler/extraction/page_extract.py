@@ -69,6 +69,7 @@ from crawler.extraction.tour_api import (
     enrich_from_api,
     fetch_tour_json,
 )
+from crawler.extraction.readers.countries import find_country
 from crawler.extraction.readers.dates import jalali_to_gregorian
 from crawler.extraction.readers.places import (
     find_destination,
@@ -322,6 +323,7 @@ def extract_page_from_html(
 
     page = ExtractedPage(url=url, html_raw=html, embedded_json=embedded_json or [])
     page.page_fields = read_page_fields(tree, url, page.embedded_json, html=html)
+    _stamp_country(page, tree)
     page.unresolved_page_fields = unresolved(page.page_fields, PAGE_FIELDS)
     for name, scope in _PAGE_ATTEMPTS.items():
         if name not in page.page_fields:
@@ -382,6 +384,42 @@ def extract_page_from_html(
             else "nothing left to sell and the page gives no reason"
         )
     return page
+
+
+def _stamp_country(page: ExtractedPage, tree: HTMLParser) -> None:
+    """Record the country over the tour's destination, once the city is final.
+
+    Read after the other page fields because the sources it falls back on are
+    the tour's own name and destination, which the reading above settles.
+
+    Example:
+        >>> page = ExtractedPage(url="https://x.com/tour/turkey-tour/1")
+        >>> _stamp_country(page, HTMLParser("<html></html>"))
+        >>> page.page_fields["destination_country"].value
+        'ترکیه'
+        >>> page.page_fields["destination_country_latin"].value
+        'turkey'
+    """
+    def named(field: str) -> Optional[str]:
+        found = page.page_fields.get(field)
+        return found.value if found and isinstance(found.value, str) else None
+
+    country = find_country(
+        page.url,
+        page.embedded_json,
+        tree,
+        title=named("tour_name"),
+        city=named("destination"),
+    )
+    if country is None:
+        for name in ("destination_country", "destination_country_latin"):
+            record_attempt(page.page_attempts, name, "site_taxonomy")
+        return
+    for name, value in (("destination_country", country.name),
+                        ("destination_country_latin", country.latin)):
+        page.page_fields[name] = ExtractedField(
+            value=value, method=METHOD_HEURISTIC_HTML, source_key="site_taxonomy"
+        )
 
 
 def _drop_the_hotel_from_destination(page: ExtractedPage) -> None:

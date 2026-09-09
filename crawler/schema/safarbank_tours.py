@@ -72,7 +72,8 @@ TOUR_TYPE_MULTI_DAY = "تور چند روزه"
 # Their numbers for the tags, confirmed by their developer. Read off their own
 # sample, where each id carried one name on all 22 rows and never a second.
 # The four we do not set are here so the table stays whole: three are the
-# agency's own judgement, and "آسیایی" wants a country we do not read yet.
+# agency's own judgement, and "آسیایی" wants the continent over the country,
+# which the sites do not file by.
 TOUR_TYPE_IDS: dict[str, str] = {
     TOUR_TYPE_MULTI_DAY: "2",
     "زمینی": "3",
@@ -203,7 +204,7 @@ def _leg(
         "day": "0",
         "destination_continent_id": "",
         "destination_country_id": "",
-        "destination_country_name": "",
+        "destination_country_name": tour.destination_country or "",
         "destination_city_id": "",
         "destination_city_name": tour.destination or "",
         "destination_region_id": "",
@@ -219,8 +220,8 @@ def _leg(
         "is_route_fake": "",
         "name": tour.destination or "",
         "name_en": "",
-        "country_name": "",
-        "country_name_en": "",
+        "country_name": tour.destination_country or "",
+        "country_name_en": tour.destination_country_latin or "",
     }
 
 
@@ -275,8 +276,8 @@ def offer_to_listing(tour: Tour, offer: TourOffer, ids: IdStore) -> dict:
         "origin_city_id": "",
         "origin_region_name": "",
         "destination_country_id": "",
-        "destination_country_name": "",
-        "destination_country_name_en": "",
+        "destination_country_name": tour.destination_country or "",
+        "destination_country_name_en": tour.destination_country_latin or "",
         "origin_country_name_en": "",
         "destination_city_name": tour.destination or "",
         "destination_city_name_en": "",
