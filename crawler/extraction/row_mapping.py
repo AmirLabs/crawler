@@ -28,6 +28,7 @@ what really happened.
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from datetime import date
 from typing import Optional
 
@@ -61,7 +62,12 @@ from crawler.extraction.readers.labels import (
     detect_room_type,
     detect_star_rating,
 )
-from crawler.extraction.readers.prices import PriceText, find_prices, pair_dual_currency
+from crawler.extraction.readers.prices import (
+    PriceText,
+    find_prices,
+    normalize_digits,
+    pair_dual_currency,
+)
 
 # Words that mark the return leg. Checked before the departure words because a
 # row labels its second date and leaves the first one implied.
@@ -97,6 +103,10 @@ _BLOCK_FIELDS: tuple[tuple[str, str], ...] = (
     ("board_type", "board_type"),
     ("nights", "nights"),
 )
+# "2 شب" — a length the card is priced at. Used only to tell one card that
+# sells two lengths from one that sells a single stay.
+_A_LENGTH = re.compile(r"([\d۰-۹٠-٩]{1,2})[\s‌]*شب")
+
 _ATTEMPTED_FIELDS: tuple[str, ...] = (
     "room_type",
     "hotel_name",
@@ -383,8 +393,54 @@ def map_rows(container: RowContainer) -> list[ExtractedRow]:
             )
             row.attempts.pop("room_type", None)
             row.unresolved_fields = unresolved(row.fields, ROW_FIELDS)
-        rows.append(row)
+        rows.extend(_split_by_length(row, text))
     return rows
+
+
+def _split_by_length(row: ExtractedRow, text: str) -> list[ExtractedRow]:
+    """One row per length a card sells, where it sells the same stay at several.
+
+    nahalgasht prices its Mashhad hotels twice on one line — "2 شب 3 شب
+    8,200,000تومان 9,050,000تومان" — and reading the first of each threw away
+    half of what every one of those pages sells.
+
+    Split only where the shape leaves no room to pair them wrongly: two or more
+    lengths, all different, exactly as many prices, and every length printed
+    before the first price. Anything else is one row, because a row that sells
+    one stay often mentions a number of nights somewhere else in its text.
+
+    Example:
+        >>> row = map_row_text("2 شب 3 شب 8,200,000تومان9,050,000تومان")
+        >>> [(r.fields["nights"].value, r.fields["price"].value["amount"])
+        ...  for r in _split_by_length(row, "2 شب 3 شب 8,200,000تومان9,050,000تومان")]
+        [(2, 8200000.0), (3, 9050000.0)]
+        >>> len(_split_by_length(map_row_text("دو تخته 92,000,000 تومان"),
+        ...                      "دو تخته 92,000,000 تومان"))
+        1
+    """
+    lengths = list(_A_LENGTH.finditer(text))
+    prices = find_prices(text)
+    if len(lengths) < 2 or len(lengths) != len(prices):
+        return [row]
+
+    counts = [int(normalize_digits(match.group(1))) for match in lengths]
+    if len(set(counts)) != len(counts):
+        return [row]
+    if lengths[-1].end() > prices[0].start:
+        return [row]
+
+    out: list[ExtractedRow] = []
+    for nights, price in zip(counts, prices):
+        copy = deepcopy(row)
+        copy.fields["nights"] = ExtractedField(
+            nights, METHOD_HEURISTIC_HTML, _ROW_TEXT_SCOPE
+        )
+        copy.fields["price"] = ExtractedField(
+            _price_value(price, None), METHOD_HEURISTIC_HTML, _ROW_TEXT_SCOPE
+        )
+        copy.unresolved_fields = unresolved(copy.fields, ROW_FIELDS)
+        out.append(copy)
+    return out
 
 
 def _heading_row(container: RowContainer) -> list[str]:
