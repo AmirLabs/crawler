@@ -18,11 +18,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from datetime import date
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from crawler.config import DATA_DIR
 
@@ -36,19 +37,35 @@ DEFAULT_STORE_PATH = DATA_DIR / "ids.json"
 BACKUPS_KEPT = 14
 
 
-def tour_key(page_url: str) -> str:
-    """The identity a tour keeps across days: its page, without the query.
+# A query value that is a date, in either calendar. Only these are dropped from
+# a tour's identity: everything else in the query is part of which tour it is.
+_A_DATE = re.compile(r"^\s*[12]\d{3}[-/]\d{1,2}[-/]\d{1,2}\s*$")
 
-    The query is dropped because a date link asks the same page for another
-    departure — bisanseir.com's ``?date=1405-06-11`` is one tour, not nine —
-    and those departures must share a tour_code.
+
+def tour_key(page_url: str) -> str:
+    """The identity a tour keeps across days: its page, minus the date asked for.
+
+    A date link asks the same page for another departure — bisanseir.com's
+    ``?date=1405-06-11`` is one tour, not nine — so that parameter is dropped
+    and those departures share a tour_code.
+
+    The rest of the query stays. Dropping all of it put ten lachinseir.com
+    tours under one code: its pages are ``tour.bc?lid=1&id=2289585``, so the
+    query is the whole of what tells one tour from another, and the client
+    dedupes on the code we send.
 
     Example:
         >>> tour_key("https://bisanseir.com/tour/tbilisi?date=1405-06-11")
         'https://bisanseir.com/tour/tbilisi'
+        >>> tour_key("https://lachinseir.com/tour.bc?lid=1&id=2289585")
+        'https://lachinseir.com/tour.bc?id=2289585&lid=1'
     """
     parsed = urlparse(page_url)
-    return urlunparse(parsed._replace(query="", fragment=""))
+    kept = sorted(
+        (key, value) for key, value in parse_qsl(parsed.query)
+        if not _A_DATE.match(value)
+    )
+    return urlunparse(parsed._replace(query=urlencode(kept), fragment=""))
 
 
 def hotel_key(site: str, name: str) -> str:
