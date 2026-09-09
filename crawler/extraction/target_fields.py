@@ -30,6 +30,8 @@ from __future__ import annotations
 PAGE_FIELDS: tuple[str, ...] = (
     "tour_name",
     "origin",
+    # Latin, for the client's origin_city_name_en, which has no other source.
+    "origin_latin",
     # Both forms of where the tour goes: the joined string a result page shows,
     # and the list a search matches against. See
     # :class:`crawler.schema.output_models.Tour`.

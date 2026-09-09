@@ -272,7 +272,7 @@ def offer_to_listing(tour: Tour, offer: TourOffer, ids: IdStore) -> dict:
         "is_show": "yes",
         "tour_status": "",
         "origin_city_name": tour.origin or "",
-        "origin_city_name_en": "",
+        "origin_city_name_en": tour.origin_latin or "",
         "origin_city_id": "",
         "origin_region_name": "",
         "destination_country_id": "",

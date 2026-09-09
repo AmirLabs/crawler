@@ -629,3 +629,112 @@ def without_the_hotel(display: Optional[str], hotel: Optional[str]) -> Optional[
             left = left.replace(name, " ")
     left = _SPACE.sub(" ", left).strip(" §" + "".join("+-,،"))
     return left or None
+
+
+# The letters that are written two ways in Persian, and how they are folded
+# before two place names are compared. A page writes "اصفهان" and a menu writes
+# "أصفهان"; a plain == says they are different cities.
+_SAME_LETTER = str.maketrans({
+    "أ": "ا", "إ": "ا", "آ": "ا", "ٱ": "ا",
+    "ي": "ی", "ى": "ی",
+    "ك": "ک",
+    "ۀ": "ه", "ة": "ه",
+    "ؤ": "و",
+    "‌": " ",  # ZWNJ: "بندر عباس" and "بندرعباس" are one place
+    "ً": "", "ٌ": "", "ٍ": "", "َ": "",
+    "ُ": "", "ِ": "", "ّ": "", "ْ": "",
+})
+
+
+def fold_name(name: str) -> str:
+    """A place name reduced to the form two spellings of it share.
+
+    Only for comparing, never for output — what the client is sent is what the
+    page wrote.
+
+    Example:
+        >>> fold_name("أصفهان"), fold_name(" بندر‌عباس ")
+        ('اصفهان', 'بندر عباس')
+        >>> fold_name("كيش") == fold_name("کیش")
+        True
+    """
+    folded = (name or "").translate(_SAME_LETTER)
+    return " ".join(folded.split())
+
+
+# The cities of Iran a tour can be sold to. Wider than the airport table above,
+# because a domestic tour goes to places with no airport — Kalardasht is sold
+# by road — and this list answers a different question: not "can a tour leave
+# from here" but "is this place inside the country".
+#
+# A closed list of the country's own cities, the way the airport table is: it
+# is a fact about Iran, not a rule about a site. It only has to hold the places
+# these ten agencies actually sell, and it is only consulted when the country
+# could not be read at all.
+_IRANIAN_CITIES: frozenset[str] = frozenset(
+    fold_name(city) for city in (
+        *_IRANIAN_AIRPORTS.values(),
+        "انزلی", "بندر انزلی", "رامسر", "چالوس", "نوشهر", "کلاردشت", "متل قو",
+        "سرعین", "ماسال", "لاهیجان", "گرگان", "بابلسر", "محمودآباد", "فریدون کنار",
+        "کاشان", "شاهرود", "سمنان", "دامغان", "طبس", "خور", "مصر", "گرمه",
+        "خرم آباد", "سنندج", "سقز", "مریوان", "ایلام", "یاسوج", "شهرکرد",
+        "بیرجند", "زابل", "چابهار", "کنارک", "بندر لنگه", "هرمز", "هنگام",
+        "خارک", "عسلویه", "دزفول", "شوش", "شوشتر", "آبادان", "خرمشهر",
+        "ماهشهر", "اراک", "خمین", "ساوه", "زنجان", "قزوین", "الموت",
+        "خلخال", "پارس آباد", "مشکین شهر", "بجنورد", "شیروان", "قوچان",
+        "نیشابور", "سبزوار", "تربت حیدریه", "کلات", "مراغه", "مرند", "جلفا",
+        "خوی", "ماکو", "سلماس", "میاندوآب", "بوکان", "مهاباد", "پیرانشهر",
+        "نجف آباد", "خمینی شهر", "شاهین شهر", "کاشمر", "فردوس", "رفسنجان",
+        "بم", "جیرفت", "سیرجان", "زرند", "شهربابک", "مرودشت", "کازرون",
+        "لار", "جهرم", "فسا", "داراب", "نی ریز", "آباده", "اقلید",
+        "بندر ترکمن", "کردکوی", "علی آباد", "مینودشت", "آزادشهر",
+        "تنکابن", "عباس آباد", "سلمان شهر", "رویان", "آمل", "بابل", "قائم شهر",
+        "بهشهر", "نکا", "جویبار", "سوادکوه", "پل سفید", "فیروزکوه", "دماوند",
+        "طالقان", "شهرکرد", "سمیرم", "ابیانه", "نطنز", "اردستان", "میمه",
+    )
+)
+
+
+def is_an_iranian_city(name: str) -> bool:
+    """Whether a place is a city inside Iran.
+
+    Answers "does this tour stay in the country" where the country itself could
+    not be read. A place the list does not know is not called foreign here —
+    the caller decides what to do with a no, and the list is short by design.
+
+    Example:
+        >>> is_an_iranian_city("مشهد"), is_an_iranian_city("كيش")
+        (True, True)
+        >>> is_an_iranian_city("آنتالیا")
+        False
+    """
+    return fold_name(name) in _IRANIAN_CITIES
+
+
+# What the client's output calls these cities in latin letters. Only the ones a
+# tour actually leaves from: origin_city_name_en has no other source, and a
+# destination's latin name comes from the site's own slug instead.
+CITY_LATIN: dict[str, str] = {
+    "تهران": "tehran", "مشهد": "mashhad", "شیراز": "shiraz",
+    "اصفهان": "isfahan", "تبریز": "tabriz", "کیش": "kish", "قشم": "qeshm",
+    "اهواز": "ahvaz", "کرمان": "kerman", "رشت": "rasht", "ارومیه": "urmia",
+    "بندرعباس": "bandar-abbas", "یزد": "yazd", "کرمانشاه": "kermanshah",
+    "ساری": "sari", "اردبیل": "ardabil", "همدان": "hamedan",
+    "بوشهر": "bushehr", "زاهدان": "zahedan", "کرج": "karaj", "قم": "qom",
+}
+
+_LATIN_BY_FOLDED: dict[str, str] = {
+    fold_name(city): latin for city, latin in CITY_LATIN.items()
+}
+
+
+def latin_city(name: str) -> Optional[str]:
+    """The latin spelling of a city a tour leaves from, if we know it.
+
+    Example:
+        >>> latin_city("تهران"), latin_city("كيش")
+        ('tehran', 'kish')
+        >>> latin_city("بانکوک") is None
+        True
+    """
+    return _LATIN_BY_FOLDED.get(fold_name(name or ""))

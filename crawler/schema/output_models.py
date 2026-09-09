@@ -383,6 +383,7 @@ class Tour:
     tour_url: str
     tour_name: Optional[str] = None
     origin: Optional[str] = None
+    origin_latin: Optional[str] = None  # "tehran"
 
     # Where the tour goes, kept twice because the two uses pull in opposite
     # directions. About a third of the tours on the target sites visit several
@@ -436,6 +437,7 @@ class Tour:
             row: dict = {
                 "tour_name": self.tour_name,
                 "origin": self.origin,
+                "origin_latin": self.origin_latin,
                 "destination": self.destination,
                 # The searchable form. Kept a list rather than joined, so a
                 # multi-city tour can be found by any one of its stops.

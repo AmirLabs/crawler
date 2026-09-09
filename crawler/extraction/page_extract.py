@@ -75,6 +75,9 @@ from crawler.extraction.readers.places import (
     find_destination,
     find_origin,
     is_a_departure_city,
+    is_an_iranian_city,
+    latin_city,
+    CITY_LATIN,
     read_flight_legs,
     read_title_places,
     without_a_hotel_word,
@@ -87,6 +90,11 @@ from crawler.profiler.models import SiteProfile
 # JSON-LD keys that hold the publisher's logo. Yoast, which several of the
 # target sites use, writes the first of these.
 _LOGO_PATH_ENDINGS = (".logo.url", ".logo.contentUrl", ".publisher.logo.url")
+
+# The two names the origin default is written in. Iran is the country a tour
+# has to state its origin on, since a domestic one leaves from anywhere.
+IRAN = "ایران"
+TEHRAN = "تهران"
 
 # Which page-level fields this module actually looks for, and where it looks.
 # ``is_installment_available`` is missing on purpose: no rule reads it yet, and
@@ -101,6 +109,7 @@ _PAGE_ATTEMPTS: dict[str, str] = {
     "logo_url": f"{METHOD_EXACT_KEY}:json_ld_logo",
     "transportation_type": f"{METHOD_HEURISTIC_HTML}:transport",
     "origin": f"{METHOD_HEURISTIC_HTML}:departure_airport",
+    "origin_latin": f"{METHOD_EXACT_KEY}:city_latin",
 }
 
 
@@ -324,6 +333,7 @@ def extract_page_from_html(
     page = ExtractedPage(url=url, html_raw=html, embedded_json=embedded_json or [])
     page.page_fields = read_page_fields(tree, url, page.embedded_json, html=html)
     _stamp_country(page, tree)
+    _stamp_origin(page)
     page.unresolved_page_fields = unresolved(page.page_fields, PAGE_FIELDS)
     for name, scope in _PAGE_ATTEMPTS.items():
         if name not in page.page_fields:
@@ -419,6 +429,71 @@ def _stamp_country(page: ExtractedPage, tree: HTMLParser) -> None:
                         ("destination_country_latin", country.latin)):
         page.page_fields[name] = ExtractedField(
             value=value, method=METHOD_HEURISTIC_HTML, source_key="site_taxonomy"
+        )
+
+
+def _stamp_origin(page: ExtractedPage) -> None:
+    """Fill the origin of a tour that goes abroad and never says it leaves Tehran.
+
+    Four of the ten sites name no departure airport on any page, so the field
+    was empty on every row they produce. They are not leaving from somewhere
+    else — of the 77 origins the run of 2026-09-09 did read, all 77 were
+    Tehran. They simply do not write down what their customers already know.
+
+    So a tour known to go abroad is given Tehran, and a tour known to stay in
+    the country is not: Mashhad and Kish tours leave from everywhere, and there
+    the empty field is the true answer. Where neither is known, nothing is
+    filled.
+
+    The default carries its own source, so a run can still count what was read
+    apart from what was assumed. This is the only field in the crawl that
+    carries a value no page stated, and it stays countable for that reason.
+
+    Example:
+        >>> page = ExtractedPage(url="https://x.com/tour/1")
+        >>> page.page_fields["destination_country"] = ExtractedField(
+        ...     "ترکیه", METHOD_HEURISTIC_HTML, "site_taxonomy")
+        >>> _stamp_origin(page)
+        >>> page.page_fields["origin"].value, page.page_fields["origin"].source_key
+        ('تهران', 'default:tehran')
+        >>> page.page_fields["origin_latin"].value
+        'tehran'
+
+        A domestic tour keeps the empty field it earned:
+
+        >>> home = ExtractedPage(url="https://x.com/tour/2")
+        >>> home.page_fields["destination_country"] = ExtractedField(
+        ...     "ایران", METHOD_HEURISTIC_HTML, "site_taxonomy")
+        >>> _stamp_origin(home)
+        >>> "origin" in home.page_fields
+        False
+    """
+    def named(field: str) -> Optional[str]:
+        found = page.page_fields.get(field)
+        return found.value if found and isinstance(found.value, str) else None
+
+    read = named("origin")
+    if read:
+        latin = latin_city(read)
+        if latin:
+            page.page_fields["origin_latin"] = ExtractedField(
+                value=latin, method=METHOD_EXACT_KEY, source_key="city_latin"
+            )
+        return
+
+    country = named("destination_country")
+    if country == IRAN:
+        return
+    goes_abroad = country is not None
+    if country is None:
+        city = named("destination")
+        goes_abroad = bool(city) and not is_an_iranian_city(city)
+    if not goes_abroad:
+        return
+
+    for name, value in (("origin", TEHRAN), ("origin_latin", CITY_LATIN[TEHRAN])):
+        page.page_fields[name] = ExtractedField(
+            value=value, method=METHOD_HEURISTIC_HTML, source_key="default:tehran"
         )
 
 

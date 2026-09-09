@@ -31,7 +31,7 @@ from urllib.parse import unquote, urlparse
 
 from selectolax.parser import HTMLParser
 
-from crawler.extraction.readers.places import is_a_departure_city
+from crawler.extraction.readers.places import AIRLINES, is_a_departure_city
 
 
 class Country(NamedTuple):
@@ -238,6 +238,30 @@ def clean_country_text(text: str) -> str:
     return _NAME_NOISE.sub("", (text or "").strip()).strip()
 
 
+# Longest first: taking "ایران" out of "ایران ایرتور" leaves "ایرتور" behind,
+# the same ordering bug places.py met.
+_AN_AIRLINE = re.compile(
+    "|".join(re.escape(name) for name in sorted(AIRLINES, key=len, reverse=True))
+)
+
+
+def _free_text(text: str) -> str:
+    """A title or a slug with its airline taken out, ready to be read for a name.
+
+    A carrier is named after a country far more often than a tour is sold to
+    one. radingasht sells "تور تفلیس+باتومی ... پرواز ایران ایرتور", and reading
+    the country out of that put a Georgian tour in Iran on 32 of one run's 93
+    listings. Dashes become spaces first, because a URL writes the same words
+    that way.
+
+    Example:
+        >>> _free_text("تور-تفلیس-باتومی-پرواز-ایران-ایرتور")
+        'تور تفلیس باتومی پرواز'
+    """
+    spaced = re.sub(r"[-_+]+", " ", text or "")
+    return " ".join(_AN_AIRLINE.sub(" ", spaced).split())
+
+
 def _crumb_lists(blob: object) -> list[list[dict]]:
     """Every ``BreadcrumbList`` inside one JSON-LD blob, however deep it sits.
 
@@ -352,7 +376,7 @@ def find_country(
             return found
 
     for segment in urlparse(url).path.split("/"):
-        found = country_slugged(segment) or country_named(unquote(segment))
+        found = country_slugged(segment) or country_named(_free_text(unquote(segment)))
         if found is not None:
             return found
 
@@ -361,7 +385,7 @@ def find_country(
         if found is not None:
             return found
 
-    named = country_named(title or "")
+    named = country_named(_free_text(title or ""))
     if named is not None:
         return named
 
