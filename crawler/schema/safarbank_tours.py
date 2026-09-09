@@ -31,7 +31,7 @@ from __future__ import annotations
 from typing import Optional
 
 from crawler.extraction.readers.places import is_a_departure_city
-from crawler.schema.agencies import agency_info, agency_name
+from crawler.schema.agencies import agency_info, agency_name, host_of
 from crawler.schema.identifiers import PROVIDER_ID, IdStore
 from crawler.schema.safarbank import CURRENCY_NAMES, packed_date, to_jalali_parts
 from crawler.schema.output_models import (
@@ -226,6 +226,30 @@ def _leg(
     }
 
 
+# Every row we send was read off somebody else's site, so this never varies.
+# It is here as a key rather than left implied because their side stores rows
+# from several kinds of provider and has to tell ours apart.
+IS_EXTERNAL = True
+
+
+def _source(page_url: str) -> dict:
+    """Where a listing was read: the site, and the page on it.
+
+    The file holds all ten agencies together and no other key says in one place
+    which one a row came from. ``tour_detail_address`` carries the same URL
+    under their name for it; this block is ours and says it plainly.
+
+    Example:
+        >>> _source("https://www.tahagasht.com/tours/item/antalya-tour")
+        {'website': 'tahagasht.com', 'page_url': 'https://www.tahagasht.com/tours/item/antalya-tour', 'is_external': True}
+    """
+    return {
+        "website": host_of(page_url),
+        "page_url": page_url,
+        "is_external": IS_EXTERNAL,
+    }
+
+
 def offer_to_listing(tour: Tour, offer: TourOffer, ids: IdStore) -> dict:
     """One departure of one tour, as one of their listing objects.
 
@@ -311,6 +335,7 @@ def offer_to_listing(tour: Tour, offer: TourOffer, ids: IdStore) -> dict:
         ],
         "agency_info": agency_info(
             tour.tour_url, tour.agency.name, tour.agency.logo_url),
+        "source": _source(tour.tour_url),
     }
 
 
