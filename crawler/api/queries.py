@@ -76,3 +76,22 @@ def packages_for(
             continue
         out.append(row)
     return out
+
+
+def only_changed(records: list[dict], keys: list) -> list[dict]:
+    """The records among these that the last run found new or different.
+
+    The keys come from the run's own memory, so this asks the same question the
+    delivery asked, rather than working it out a second way.
+
+    Example:
+        >>> rows = [{"api_id": "a"}, {"api_id": "b"}]
+        >>> only_changed(rows, ["b"])
+        [{'api_id': 'b'}]
+        >>> only_changed(rows, [])
+        []
+    """
+    from crawler.automation.memory import record_key
+
+    wanted = set(keys)
+    return [row for row in records if record_key(row) in wanted]

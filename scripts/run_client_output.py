@@ -54,7 +54,8 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from crawler.api.store import PACKAGES_FILE, TOURS_FILE, publish
+from crawler.api.store import CHANGES_FILE, PACKAGES_FILE, TOURS_FILE, publish
+from crawler.automation.memory import UNCHANGED_NOTE, RunMemory
 from crawler.config import PROJECT_ROOT
 from crawler.extraction.page_extract import extract_page
 from crawler.filtering.tour_groups import group_by_tour
@@ -103,7 +104,9 @@ def _stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
-async def crawl_site(domain: str, pages: int, ids: IdStore) -> dict:
+async def crawl_site(
+    domain: str, pages: int, ids: IdStore, memory: RunMemory
+) -> dict:
     """Open tour pages until ``pages`` of them sold something, and convert each.
 
     Only a page that actually sells is kept. A URL that answers 404, or whose
@@ -113,7 +116,7 @@ async def crawl_site(domain: str, pages: int, ids: IdStore) -> dict:
     name = site_name(domain)
     result: dict = {
         "domain": domain, "name": name, "first": [], "second": [],
-        "kept": [], "skipped": [], "notes": [],
+        "kept": [], "skipped": [], "notes": [], "unchanged": 0,
     }
     print(f"\n=== {name}", flush=True)
 
@@ -138,12 +141,21 @@ async def crawl_site(domain: str, pages: int, ids: IdStore) -> dict:
         started = time.monotonic()
         print(f"  [{len(result['kept']) + 1}/{pages}] {url[:84]}", flush=True)
         try:
-            page = await extract_page(url, profile, timeout=40)
+            page = await extract_page(url, profile, timeout=40,
+                                      unchanged=memory.unchanged)
         except Exception as error:  # a dead page must not end the run
             result["skipped"].append({"url": url, "why": f"{type(error).__name__}"})
             print(f"        skipped ({type(error).__name__})", flush=True)
             continue
 
+        if UNCHANGED_NOTE in page.notes:
+            result["unchanged"] += 1
+            print(f"        unchanged, not read ({time.monotonic() - started:.0f}s)",
+                  flush=True)
+            await asyncio.sleep(POLITE_PAUSE)
+            continue
+
+        memory.remember_page(url, page.content_hash)
         tour = build_tour(page)
         first = tour_to_objects(tour, ids, name)
         second = tour_to_listings(tour, ids)
@@ -177,7 +189,7 @@ async def crawl_site(domain: str, pages: int, ids: IdStore) -> dict:
     return result
 
 
-def write_everything(results: list[dict]) -> None:
+def write_everything(results: list[dict], memory: RunMemory) -> None:
     """Both files, with every site inside them, plus a note on what was crawled.
 
     One file per structure and not one per site, because that is what the
@@ -199,10 +211,16 @@ def write_everything(results: list[dict]) -> None:
         encoding="utf-8",
     )
 
+    # What the client does not already hold. The two files stay complete, so a
+    # night they missed can still be caught up from them.
+    changed = memory.to_send(first) + memory.to_send(second)
+
     # Where the API reads them. logs/ is emptied at the start of every run, so
     # a call at midnight would otherwise be served half a catalogue.
     publish(PACKAGES_FILE, first)
     publish(TOURS_FILE, second)
+    memory.remember_sent(changed)
+    publish(CHANGES_FILE, memory.tonight)
 
     codes_first = {obj.get("tour_code") for obj in first}
     codes_second = {obj.get("tour_code") for obj in second}
@@ -215,15 +233,16 @@ def write_everything(results: list[dict]) -> None:
         f"   second_structure.json   {len(second)} objects,"
         f" {len(codes_second)} tour codes",
         f"   codes in both           {len(codes_first & codes_second)}",
+        f"   new or changed tonight  {len(memory.tonight)} records",
         "",
-        f"{'site':18}{'tours':>7}{'skipped':>9}{'first':>8}{'second':>8}",
+        f"{'site':18}{'tours':>7}{'skipped':>9}{'unread':>8}{'first':>8}{'second':>8}",
         "=" * 78,
     ]
     for result in results:
         lines.append(
             f"   {result['name']:15}{len(result['kept']):>7}"
-            f"{len(result['skipped']):>9}{len(result['first']):>8}"
-            f"{len(result['second']):>8}"
+            f"{len(result['skipped']):>9}{result.get('unchanged', 0):>8}"
+            f"{len(result['first']):>8}{len(result['second']):>8}"
         )
     for result in results:
         if not (result["notes"] or result["skipped"]):
@@ -249,23 +268,26 @@ async def main(domain: Optional[str], pages: int) -> None:
 
     # One store for the whole run, read from disk and written back to it.
     ids = IdStore()
+    # What last night saw, so tonight reads and sends only what moved.
+    memory = RunMemory()
 
     started = time.monotonic()
     results: list[dict] = []
     for index, site in enumerate(domains, start=1):
         print(f"\n[{index}/{len(domains)}] {site}", flush=True)
         try:
-            result = await crawl_site(site, pages, ids)
+            result = await crawl_site(site, pages, ids, memory)
         except Exception as error:  # one site must not take the others with it
             print(f"  FAILED: {type(error).__name__}: {error}", flush=True)
             continue
         results.append(result)
         # Written after every site, so a run stopped halfway still leaves both
         # files holding everything crawled up to that point.
-        write_everything(results)
+        write_everything(results, memory)
         # Saved after every site for the same reason the files are: a run that
         # stops halfway must not mint these numbers again tomorrow.
         ids.save()
+        memory.save()
         print(f"  -> {len(result['first'])} first, {len(result['second'])} second"
               f"  ({sum(len(r['first']) for r in results)} in the file)", flush=True)
 

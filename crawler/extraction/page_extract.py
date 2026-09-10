@@ -34,7 +34,7 @@ from the tour's title instead.
 from __future__ import annotations
 
 from datetime import date
-from typing import Optional
+from typing import Callable, Optional
 from urllib.parse import urljoin, urlparse
 
 import httpx
@@ -56,6 +56,7 @@ from crawler.extraction.models import (
     ExtractedPage,
     record_attempt,
 )
+from crawler.automation.memory import UNCHANGED_NOTE
 from crawler.extraction.availability import find_closed_notice, split_by_availability
 from crawler.extraction.date_links import find_date_links
 
@@ -632,6 +633,7 @@ async def extract_page(
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     today: Optional[date] = None,
     follow_dates: bool = True,
+    unchanged: Optional[Callable[[str, Optional[str]], bool]] = None,
 ) -> ExtractedPage:
     """Fetch one tour URL and read everything step 3 knows how to read.
 
@@ -643,14 +645,19 @@ async def extract_page(
     other dates links to them, and each of those pages links back, so the
     fetches this makes are told not to follow any of their own.
 
+    ``unchanged`` is asked, once the markup is in hand, whether this is exactly
+    what was read last time. A yes returns the fetch unread, carrying
+    :data:`~crawler.automation.memory.UNCHANGED_NOTE` and no rows. The page is
+    always fetched: there is no way to know it changed without looking.
+
     Example:
         >>> profile = SiteProfile(domain="nahalgasht.com")
         >>> page = await extract_page("https://nahalgasht.com/tour/1", profile)
         >>> page.status_code
         200
     """
-    page = await _extract_one(url, profile, client, timeout, today)
-    if not follow_dates or not page.html_raw:
+    page = await _extract_one(url, profile, client, timeout, today, unchanged)
+    if not follow_dates or not page.html_raw or UNCHANGED_NOTE in page.notes:
         return page
     return await _add_other_dates(page, profile, client, timeout, today)
 
@@ -778,6 +785,7 @@ async def _extract_one(
     client: Optional[httpx.AsyncClient],
     timeout: float,
     today: Optional[date],
+    unchanged: Optional[Callable[[str, Optional[str]], bool]] = None,
 ) -> ExtractedPage:
     """One URL, fetched and read, with no other date followed.
 
@@ -793,6 +801,9 @@ async def _extract_one(
     """
     fetched = await fetch_page(url, profile, client=client, timeout=timeout)
     if not fetched.html_raw:
+        return fetched
+    if unchanged is not None and unchanged(url, fetched.content_hash):
+        fetched.notes.append(UNCHANGED_NOTE)
         return fetched
 
     fetched = _settle_render_question(fetched, profile, today)

@@ -25,6 +25,10 @@ PUBLISHED_DIR = DATA_DIR / "published"
 TOURS_FILE = "tours.json"
 PACKAGES_FILE = "packages.json"
 
+# The keys of the records that were new or changed in the last run. The two
+# files above stay complete so a client that missed a night can still re-sync.
+CHANGES_FILE = "changes.json"
+
 
 def publish(name: str, objects: list[dict], directory: Optional[Path] = None) -> Path:
     """Write one file where the API reads it, replacing the last one atomically.

@@ -41,8 +41,8 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from crawler.api.queries import packages_for
-from crawler.api.store import PACKAGES_FILE, TOURS_FILE, read
+from crawler.api.queries import only_changed, packages_for
+from crawler.api.store import CHANGES_FILE, PACKAGES_FILE, TOURS_FILE, read
 
 USER_VARIABLE = "CRAWLER_API_USER"
 PASSWORD_VARIABLE = "CRAWLER_API_PASSWORD"
@@ -104,8 +104,11 @@ def signed_in(
 
 
 @app.get("/api/v1/tours")
-def tours(_: str = Depends(signed_in)) -> dict:
+def tours(_: str = Depends(signed_in), changed: bool = False) -> dict:
     """Every tour the last finished run published, one per departure.
+
+    ``changed=true`` narrows it to what that run found new or different. The
+    full list stays available so a night that was missed can be caught up.
 
     Example:
         >>> client = _a_test_client()
@@ -115,7 +118,8 @@ def tours(_: str = Depends(signed_in)) -> dict:
         >>> answer["status"], answer["code"], answer["message"]
         ('success', 200, 'Data Fetched Successfully')
     """
-    return envelope(read(TOURS_FILE))
+    return envelope(only_changed(read(TOURS_FILE), read(CHANGES_FILE)) if changed
+                    else read(TOURS_FILE))
 
 
 @app.get("/api/v1/packages")
@@ -124,6 +128,7 @@ def packages(
     tour_code: str = Query(..., min_length=1),
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    changed: bool = False,
 ) -> dict:
     """The packages of one tour, narrowed to a window of departure dates.
 
@@ -139,7 +144,10 @@ def packages(
         >>> answer.status_code, answer.json()["data"]
         (200, [])
     """
-    return envelope(packages_for(read(PACKAGES_FILE), tour_code, start_date, end_date))
+    found = packages_for(read(PACKAGES_FILE), tour_code, start_date, end_date)
+    if changed:
+        found = only_changed(found, read(CHANGES_FILE))
+    return envelope(found)
 
 
 @app.exception_handler(HTTPException)
