@@ -1,0 +1,82 @@
+{
+  "nahalgasht.com": {
+    "AgencyName": "نهال گشت",
+    "Address": "تهران، سعادت آباد، میدان کاج (شهید طهرانی مقدم)، خیابان کنی فرد (۱۰)، پلاک ۳۴، طبقه اول، واحد ۲",
+    "Phone": "02191008111",
+    "Mobile": "",
+    "Logo": "https://files.nahalgasht.com/statics/svgs/logo.svg",
+    "checked_on": "1405-06-18"
+  },
+  "alefbatour.com": {
+    "AgencyName": "الفبای سفر",
+    "Address": "تهران، فلکه دوم صادقیه، ابتدای اشرفی اصفهانی، نبش سازمان آب غربی، نبش گلستان دوم، پلاک ۱",
+    "Phone": "02149350000",
+    "Mobile": "09196230434",
+    "Logo": "https://cdn.alefbatour.com/Content/Upload/Images/logo-4820.webp",
+    "checked_on": "1405-06-18"
+  },
+  "avisatravel.com": {
+    "AgencyName": "آژانس هواپیمایی آویسا",
+    "Address": "تهران، خیابان شهید بهشتی، خیابان کاووسی فر، نبش خیابان وطنی، پلاک ۵۰، طبقه ۲",
+    "Phone": "02141535",
+    "Mobile": "09919005607",
+    "Logo": "https://cdn.avisatravel.com/Content/Upload/Images/avisa-logo.webp",
+    "checked_on": "1405-06-18"
+  },
+  "bisanseir.com": {
+    "AgencyName": "بیسان سیر",
+    "Address": "تهران، خیابان بهشتی، خیابان صابونچی، پلاک ۵۸، طبقه ۳، واحد ۱ و ۵",
+    "Phone": "02143000030",
+    "Mobile": "",
+    "Logo": "https://bisanseir.com/media/site/logos/bisan_logo-02.png",
+    "checked_on": "1405-06-18"
+  },
+  "liyaseir.com": {
+    "AgencyName": "لیا سیر",
+    "Address": "تهران، سعادت آباد، علامه شمالی، برج علامه، پلاک ۵۵، طبقه دوم، واحد C",
+    "Phone": "02122367977",
+    "Mobile": "",
+    "Logo": "https://liyaseir.com/wp-content/uploads/2026/06/Logo-Farsi-Navy-blue-1.png",
+    "checked_on": "1405-06-18"
+  },
+  "vanrosh.com": {
+    "AgencyName": "روشنی گشت",
+    "Address": "تهران، خیابان ولیعصر، ابتدای خیابان مطهری، بین سربداران و لارستان، شماره ۴۶۴، طبقه اول",
+    "Phone": "02151713",
+    "Mobile": "09120913869",
+    "Logo": "https://vanrosh.com/wp-content/uploads/2025/08/logo.webp",
+    "checked_on": "1405-06-18"
+  },
+  "tahagasht.com": {
+    "AgencyName": "آژانس هواپیمایی طاها گشت",
+    "Address": "تهران، خیابان پاسداران، نبش نگارستان ششم، ساختمان طاها گشت",
+    "Phone": "02124825000",
+    "Mobile": "",
+    "Logo": "https://www.tahagasht.com/assets/images/bottom-logo-package-text-only.png",
+    "checked_on": "1405-06-18"
+  },
+  "chakavaktravel.com": {
+    "AgencyName": "چکاوک آسمان آبی",
+    "Address": "تهران، خیابان مطهری، خیابان میرزای شیرازی، بین خیابان ۱۷ و ۱۹، پلاک ۱۷۵، واحد ۵",
+    "Phone": "02141275",
+    "Mobile": "",
+    "Logo": "https://chakavaktravel.com/images/ui/chakavak.png",
+    "checked_on": "1405-06-18"
+  },
+  "lachinseir.com": {
+    "AgencyName": "لاچین سیر",
+    "Address": "تهران، شهرک غرب، میدان صنعت، خیابان فرحزادی، مجتمع تجاری شهرک غرب، طبقه ۴",
+    "Phone": "02141664166",
+    "Mobile": "09351189924",
+    "Logo": "https://cdn.basiscore.net/lachinseir.com/images/logo.png",
+    "checked_on": "1405-06-18"
+  },
+  "radingasht.com": {
+    "AgencyName": "آژانس گردشگری رادین گشت",
+    "Address": "تهران، خیابان شهید بهشتی، بعد از تقاطع سهروردی، پلاک ۱۵۸، واحد ۸",
+    "Phone": "02152703",
+    "Mobile": "",
+    "Logo": "https://cdn.radingasht.com/Content/Upload/Images/لوگو شرکت رادین گشت-01-9747.webp",
+    "checked_on": "1405-06-18"
+  }
+}
