@@ -397,6 +397,7 @@ class Tour:
     # The country those cities are in, under both names. The client's second
     # structure asks for both and no page writes either in its text — they come
     # from where the site files the tour. The latin one has no other source.
+    destination_city_latin: Optional[str] = None     # "yerevan"
     destination_country: Optional[str] = None        # "ترکیه"
     destination_country_latin: Optional[str] = None  # "turkey"
 
@@ -442,6 +443,7 @@ class Tour:
                 # The searchable form. Kept a list rather than joined, so a
                 # multi-city tour can be found by any one of its stops.
                 "destinations": list(self.destinations),
+                "destination_city_latin": self.destination_city_latin,
                 "destination_country": self.destination_country,
                 "destination_country_latin": self.destination_country_latin,
                 # Page level value, unless this one departure overrode it.

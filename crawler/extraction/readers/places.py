@@ -44,7 +44,12 @@ MONTHS: tuple[str, ...] = (
     "فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور",
     "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند",
 )
-SEASONS: tuple[str, ...] = ("بهار", "تابستان", "پاییز", "پائیز", "زمستان")
+SEASONS: tuple[str, ...] = (
+    "بهار", "تابستان", "تابستانه", "پاییز", "پائیز", "پاییزه", "زمستان",
+    # Nowruz sells a tour the way a season does, and it survived the other
+    # vocabularies: lachinseir's "تور دور آسیا ویژه نوروز" kept it as a place.
+    "نوروز", "نوروزی",
+)
 
 
 AIRLINES: tuple[str, ...] = (
@@ -63,6 +68,9 @@ FILLER: tuple[str, ...] = (
     # A closed vocabulary like the airlines, and the fact itself is already read
     # into transportation_type, so nothing is lost by taking it out here.
     "هوایی", "زمینی", "قطار", "اتوبوس", "کشتی",
+    # How a page advertises a list of tours, which chakavaktravel puts in the
+    # same title as the tour: "تور کوش آداسی | لیست تورهای ارزان و لحظه آخری".
+    "لحظه آخری", "تورهای", "لیست", "ارزان", "دور",
 )
 
 _SEPARATOR = re.compile(r"[,\.،؛/\\+\-–—:]+")
@@ -514,6 +522,12 @@ def read_route(html: str) -> list[str]:
     return route
 
 
+# What a stay is called, where a flight box prints it beside the route.
+_A_SERVICE = re.compile(
+    "اقامت|تحویل|پذیرش|صبحانه|ترانسفر|بیمه|ویزا|هتل|اتاق"
+)
+
+
 def find_destination(html: str) -> Optional[str]:
     """Where the page's own flight lines say the tour goes.
 
@@ -523,15 +537,23 @@ def find_destination(html: str) -> Optional[str]:
 
     Returns ``None`` where every city on the route is Iranian — a domestic tour
     cannot be told apart this way, and guessing would be worse than the title
-    rule the caller falls back to.
+    rule the caller falls back to. A line about the stay rather than the route
+    is refused for the same reason: bisanseir's flight box gave "اقامت هتل" and
+    liyaseir's "تحویل اتاق‌ها", both of which were sent as cities.
 
     Example:
         >>> find_destination('<body><ul><li>تهران</li><li>فرودگاه امام خمینی</li></ul>'
         ...                  '<ul><li>کوالالامپور</li>'
         ...                  '<li>فرودگاه بین المللی کوالالامپور</li></ul></body>')
         'کوالالامپور'
+        >>> find_destination('<body><ul><li>اقامت هتل</li>'
+        ...                  '<li>فرودگاه</li></ul></body>') is None
+        True
     """
-    abroad = [city for city in read_route(html) if not is_a_departure_city(city)]
+    abroad = [
+        city for city in read_route(html)
+        if not is_a_departure_city(city) and not _A_SERVICE.search(city)
+    ]
     return abroad[0] if abroad else None
 
 

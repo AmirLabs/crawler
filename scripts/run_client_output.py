@@ -64,7 +64,7 @@ from crawler.utils.domains import load_domains
 LOGS = PROJECT_ROOT / "logs"
 OUT = LOGS / "client"
 
-DEFAULT_PAGES = 3
+DEFAULT_PAGES = 1
 
 # How many URLs may be opened for each page wanted. Nine of tahagasht's first
 # ten tries answer 404 because its sitemap still lists departures it has taken

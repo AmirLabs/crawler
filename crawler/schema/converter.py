@@ -518,6 +518,7 @@ def build_tour(page: ExtractedPage) -> Tour:
         origin_latin=_value(page.page_fields, "origin_latin"),
         destination=_value(page.page_fields, "destination"),
         destinations=_value(page.page_fields, "destinations") or [],
+        destination_city_latin=_value(page.page_fields, "destination_city_latin"),
         destination_country=_value(page.page_fields, "destination_country"),
         destination_country_latin=_value(
             page.page_fields, "destination_country_latin"),

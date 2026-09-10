@@ -226,7 +226,7 @@ def _leg(
         "is_del": "no",
         "is_route_fake": "",
         "name": tour.destination or "",
-        "name_en": "",
+        "name_en": tour.destination_city_latin or "",
         "country_name": tour.destination_country or "",
         "country_name_en": tour.destination_country_latin or "",
     }
@@ -315,7 +315,7 @@ def offer_to_listing(tour: Tour, offer: TourOffer, ids: IdStore) -> dict:
         "destination_country_name_en": tour.destination_country_latin or "",
         "origin_country_name_en": "",
         "destination_city_name": tour.destination or "",
-        "destination_city_name_en": "",
+        "destination_city_name_en": tour.destination_city_latin or "",
         "destination_region_name": "",
         "vehicle_name": airline,
         "type_vehicle_name": vehicle,

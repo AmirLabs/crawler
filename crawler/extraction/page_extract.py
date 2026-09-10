@@ -69,7 +69,11 @@ from crawler.extraction.tour_api import (
     enrich_from_api,
     fetch_tour_json,
 )
-from crawler.extraction.readers.countries import find_country
+from crawler.extraction.readers.countries import (
+    find_city,
+    find_country,
+    is_a_region,
+)
 from crawler.extraction.readers.dates import jalali_to_gregorian
 from crawler.extraction.readers.places import (
     find_destination,
@@ -102,6 +106,7 @@ TEHRAN = "تهران"
 _PAGE_ATTEMPTS: dict[str, str] = {
     "tour_name": f"{METHOD_HEURISTIC_HTML}:h1/og:title",
     "destination": f"{METHOD_HEURISTIC_HTML}:tour_name",
+    "destination_city_latin": f"{METHOD_EXACT_KEY}:site_taxonomy",
     "destinations": f"{METHOD_HEURISTIC_HTML}:tour_name",
     "image_url": f"{METHOD_HEURISTIC_HTML}:og:image",
     "agency_name": f"{METHOD_HEURISTIC_HTML}:og:site_name",
@@ -218,14 +223,22 @@ def read_page_fields(
     # model pass in :mod:`crawler.llm.tour_names` now only sees what is left.
     title = fields["tour_name"].value if "tour_name" in fields else None
     places = read_title_places(title) if isinstance(title, str) else None
-    # Where the page prints a flight, it names the city itself, and that beats a
-    # name recovered by subtracting noise from a title. The title still wins
-    # when it already contains that city, because a two-city tour says both in
-    # its title and the flight box names only where the plane lands: vanrosh
-    # sells "چشمه و ازمیر" and flies to ازمیر alone.
+    # Three sources, in order of how much of the answer is the site's own. The
+    # crumb is where it files the tour, the flight box is what it printed, and
+    # the title is what we rebuilt by subtracting noise — which is how
+    # "دور آسیا نوروز" became a city.
     words = main_text(html) if html else ""
+    filed = find_city(url, embedded_json, tree)
     flown = find_destination(html) if html else None
-    if places is not None and places.destinations:
+    if filed is not None:
+        record("destinations", [filed.name], METHOD_EXACT_KEY, "site_taxonomy")
+        record("destination", filed.name, METHOD_EXACT_KEY, "site_taxonomy")
+        record("destination_city_latin", filed.latin, METHOD_EXACT_KEY,
+               "site_taxonomy")
+    elif places is not None and places.destinations:
+        # The title still wins over the flight box when it already names that
+        # city: a two-city tour says both in its title and the box names only
+        # where the plane lands — vanrosh sells "چشمه و ازمیر", flying to ازمیر.
         if flown and flown not in places.destinations:
             record("destinations", [flown], METHOD_HEURISTIC_HTML, "flight_block")
             record("destination", flown, METHOD_HEURISTIC_HTML, "flight_block")
@@ -333,6 +346,7 @@ def extract_page_from_html(
     page = ExtractedPage(url=url, html_raw=html, embedded_json=embedded_json or [])
     page.page_fields = read_page_fields(tree, url, page.embedded_json, html=html)
     _stamp_country(page, tree)
+    _drop_the_country_from_destination(page)
     _stamp_origin(page)
     page.unresolved_page_fields = unresolved(page.page_fields, PAGE_FIELDS)
     for name, scope in _PAGE_ATTEMPTS.items():
@@ -495,6 +509,64 @@ def _stamp_origin(page: ExtractedPage) -> None:
         page.page_fields[name] = ExtractedField(
             value=value, method=METHOD_HEURISTIC_HTML, source_key="default:tehran"
         )
+
+
+def _drop_the_country_from_destination(page: ExtractedPage) -> None:
+    """Take the country back out of a destination read from a title.
+
+    A title names both — vanrosh sells "تور مالزی – 7 شب کوالالامپور" — and
+    subtracting noise cannot tell which word is the country. Now that the
+    country is read on its own, it can simply be removed, along with a
+    continent: liyaseir's "اسکاندیناوی" is not a city either. Where nothing is
+    left the field goes empty, which is the honest answer.
+
+    Only this tour's own country goes. Every country is not dropped, because
+    some are also the city — a tour to "کوالالامپور + سنگاپور" keeps both.
+
+    Only a destination read from the title is touched. One filed by the site or
+    printed in a flight box named a city to begin with.
+
+    Example:
+        >>> page = ExtractedPage(url="https://x.com/tour/1")
+        >>> page.page_fields["destination_country"] = ExtractedField(
+        ...     "مالزی", METHOD_HEURISTIC_HTML, "site_taxonomy")
+        >>> page.page_fields["destinations"] = ExtractedField(
+        ...     ["مالزی", "کوالالامپور"], METHOD_HEURISTIC_HTML, "tour_name")
+        >>> page.page_fields["destination"] = ExtractedField(
+        ...     "مالزی + کوالالامپور", METHOD_HEURISTIC_HTML, "tour_name")
+        >>> _drop_the_country_from_destination(page)
+        >>> page.page_fields["destination"].value
+        'کوالالامپور'
+        >>> page.page_fields["destinations"].value
+        ['کوالالامپور']
+    """
+    field = page.page_fields.get("destination")
+    if field is None or not field.source_key.endswith("tour_name"):
+        return
+    country = page.page_fields.get("destination_country")
+    named = country.value if country else None
+
+    listed = page.page_fields.get("destinations")
+    places = list(listed.value) if listed and isinstance(listed.value, list) else []
+    kept = [
+        place for place in places
+        if place != named and not is_a_region(place)
+    ]
+    if kept == places:
+        return
+
+    for name in ("destination", "destinations"):
+        page.page_fields.pop(name, None)
+        record_attempt(page.page_attempts, name, _PAGE_ATTEMPTS[name])
+    if not kept:
+        return
+    page.page_fields["destinations"] = ExtractedField(
+        value=kept, method=field.method, source_key=f"{field.source_key}-country"
+    )
+    page.page_fields["destination"] = ExtractedField(
+        value=" + ".join(kept), method=field.method,
+        source_key=f"{field.source_key}-country",
+    )
 
 
 def _drop_the_hotel_from_destination(page: ExtractedPage) -> None:
