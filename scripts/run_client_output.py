@@ -17,13 +17,17 @@ of every hotel on every date, which is what a person books. The second is a
 listing — one line per departure, carrying the route, the carrier and the
 cheapest price, which is what a search page shows before anyone clicks.
 
-**A tour keeps one ``tour_code`` in both files.** One :class:`IdStore` serves
-the whole run, so a listing in the second file can be looked up in the first.
-The store is held in memory here rather than on disk: the numbers are for
-reading these two files against each other, not for telling tomorrow's crawl
-what yesterday called a tour. Keeping them across nights is step 6's job, and
-until it exists a run that wrote to ``data/ids.json`` would quietly make every
-number in it depend on a file nobody backs up.
+**A tour keeps one ``tour_code``, in both files and across nights.** One
+:class:`IdStore` serves the whole run and is read from and written back to
+``data/ids.json``, so a listing in the second file can be looked up in the
+first, and a tour we sent last night is the same tour tonight. The client
+checks a record against ``api_id``, which is built on that code: a code that
+moved overnight would point their database at a different tour.
+
+That file cannot be rebuilt if it is lost — nothing can work out which tour
+held ``31540001`` yesterday — so it is written through a temporary name and a
+rename, with dated copies kept beside it. Wherever this ends up running, it
+needs a backup that is not on the same disk.
 
 ``logs/`` is emptied first. What was there came from earlier runs of a
 different script and reading a new run against it would compare two different
@@ -243,9 +247,8 @@ async def main(domain: Optional[str], pages: int) -> None:
     clear_logs()
     print(f"cleared logs/, crawling {len(domains)} site(s), {pages} pages each")
 
-    # One store for the whole run, so a tour has the same tour_code in both
-    # files. Held in memory: see the note at the top of this module.
-    ids = IdStore(path=None)
+    # One store for the whole run, read from disk and written back to it.
+    ids = IdStore()
 
     started = time.monotonic()
     results: list[dict] = []
@@ -260,6 +263,9 @@ async def main(domain: Optional[str], pages: int) -> None:
         # Written after every site, so a run stopped halfway still leaves both
         # files holding everything crawled up to that point.
         write_everything(results)
+        # Saved after every site for the same reason the files are: a run that
+        # stops halfway must not mint these numbers again tomorrow.
+        ids.save()
         print(f"  -> {len(result['first'])} first, {len(result['second'])} second"
               f"  ({sum(len(r['first']) for r in results)} in the file)", flush=True)
 
