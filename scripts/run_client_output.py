@@ -33,9 +33,14 @@ needs a backup that is not on the same disk.
 different script and reading a new run against it would compare two different
 questions.
 
+Only one of these runs at a time, and everything it prints is kept under
+``data/runs`` for a fortnight — ``logs/`` is emptied at the start of every
+crawl, so a night that went wrong would otherwise leave no record. It exits
+non-zero when a site failed, which is what tells whatever schedules it.
+
 Run::
 
-    .venv/bin/python scripts/run_client_output.py
+    .venv/bin/python scripts/run_client_output.py --pages 0   # every page
     .venv/bin/python scripts/run_client_output.py --domain nahalgasht --pages 3
 """
 
@@ -56,6 +61,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from crawler.api.store import CHANGES_FILE, PACKAGES_FILE, TOURS_FILE, publish
 from crawler.automation.memory import UNCHANGED_NOTE, RunMemory
+from crawler.automation.scheduler import AlreadyRunning, only_one_run, run_log
 from crawler.config import PROJECT_ROOT
 from crawler.extraction.page_extract import extract_page
 from crawler.filtering.tour_groups import group_by_tour
@@ -135,8 +141,9 @@ async def crawl_site(
         result["notes"].append("no tour URLs found")
         return result
 
-    for url in candidates[: pages * ATTEMPTS_PER_PAGE]:
-        if len(result["kept"]) >= pages:
+    budget = len(candidates) if pages == 0 else pages * ATTEMPTS_PER_PAGE
+    for url in candidates[:budget]:
+        if pages and len(result["kept"]) >= pages:
             break
         started = time.monotonic()
         print(f"  [{len(result['kept']) + 1}/{pages}] {url[:84]}", flush=True)
@@ -181,7 +188,7 @@ async def crawl_site(
               flush=True)
         await asyncio.sleep(POLITE_PAUSE)
 
-    if len(result["kept"]) < pages:
+    if pages and len(result["kept"]) < pages:
         result["notes"].append(
             f"only {len(result['kept'])} of {pages} URLs sold anything, after"
             f" {len(result['kept']) + len(result['skipped'])} tries"
@@ -255,13 +262,13 @@ def write_everything(results: list[dict], memory: RunMemory) -> None:
     (OUT / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-async def main(domain: Optional[str], pages: int) -> None:
+async def main(domain: Optional[str], pages: int) -> int:
     domains = load_domains()
     if domain:
         domains = [d for d in domains if domain in d]
         if not domains:
             print(f"no domain matching {domain!r} in domains/targets.txt")
-            return
+            return 1
 
     clear_logs()
     print(f"cleared logs/, crawling {len(domains)} site(s), {pages} pages each")
@@ -272,12 +279,14 @@ async def main(domain: Optional[str], pages: int) -> None:
     memory = RunMemory()
 
     started = time.monotonic()
+    failed = 0
     results: list[dict] = []
     for index, site in enumerate(domains, start=1):
         print(f"\n[{index}/{len(domains)}] {site}", flush=True)
         try:
             result = await crawl_site(site, pages, ids, memory)
         except Exception as error:  # one site must not take the others with it
+            failed += 1
             print(f"  FAILED: {type(error).__name__}: {error}", flush=True)
             continue
         results.append(result)
@@ -292,13 +301,20 @@ async def main(domain: Optional[str], pages: int) -> None:
               f"  ({sum(len(r['first']) for r in results)} in the file)", flush=True)
 
     print(f"\ndone in {time.monotonic() - started:.0f}s, files in {OUT}")
+    if failed:
+        print(f"{failed} of {len(domains)} sites failed", flush=True)
+    return failed
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.WARNING)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--domain", help="only this site (substring match)")
     parser.add_argument("--pages", type=int, default=DEFAULT_PAGES,
-                        help="tour pages per site")
+                        help="tour pages per site; 0 for every page found")
     args = parser.parse_args()
-    asyncio.run(main(args.domain, args.pages))
+    try:
+        with only_one_run(), run_log():
+            sys.exit(1 if asyncio.run(main(args.domain, args.pages)) else 0)
+    except AlreadyRunning as reason:
+        print(f"not starting: {reason}")
+        sys.exit(1)
