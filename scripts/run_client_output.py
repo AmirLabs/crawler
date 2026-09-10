@@ -271,7 +271,8 @@ async def main(domain: Optional[str], pages: int) -> int:
             return 1
 
     clear_logs()
-    print(f"cleared logs/, crawling {len(domains)} site(s), {pages} pages each")
+    wanted = f"{pages} pages each" if pages else "every page"
+    print(f"cleared logs/, crawling {len(domains)} site(s), {wanted}")
 
     # One store for the whole run, read from disk and written back to it.
     ids = IdStore()
