@@ -97,6 +97,9 @@ chromadb/
 # Crawler output
 data/*
 !data/.gitkeep
+# Written by hand from each agency's own contact page, not by a crawl. Without
+# it in the repository a fresh checkout sends agency_info empty on every site.
+!data/agencies.json
 scraped_data/
 crawl_data/
 downloads/
