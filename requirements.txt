@@ -8,3 +8,7 @@ playwright>=1.44
 # nightly crawl is a bad place to discover it.
 langchain-core>=0.3,<0.4
 langchain-openai>=0.2,<0.4
+
+# Serving the published output over the two routes the client calls.
+fastapi>=0.115
+uvicorn[standard]>=0.30

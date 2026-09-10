@@ -50,6 +50,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from crawler.api.store import PACKAGES_FILE, TOURS_FILE, publish
 from crawler.config import PROJECT_ROOT
 from crawler.extraction.page_extract import extract_page
 from crawler.filtering.tour_groups import group_by_tour
@@ -193,6 +194,11 @@ def write_everything(results: list[dict]) -> None:
         json.dumps(listing_document(second), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+    # Where the API reads them. logs/ is emptied at the start of every run, so
+    # a call at midnight would otherwise be served half a catalogue.
+    publish(PACKAGES_FILE, first)
+    publish(TOURS_FILE, second)
 
     codes_first = {obj.get("tour_code") for obj in first}
     codes_second = {obj.get("tour_code") for obj in second}
