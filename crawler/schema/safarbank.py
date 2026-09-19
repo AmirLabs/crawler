@@ -8,8 +8,9 @@ in ``data/safarbank.json`` and this writes the same 62 keys, in the same types
 
 Two of their conventions are easy to get backwards and expensive when you do:
 
-* ``_r`` is the **rial** half of a price and ``_a`` the foreign half. Their
-  ``rooms`` list carries the same amount in **toman**, one tenth of ``_r``.
+* ``_r`` is the **rial** half of a price and ``_a`` the foreign half. The
+  ``rooms`` list carries the same rial figure: every amount we send is in
+  rial, and :func:`rial_of` is the one place toman becomes it.
 * ``infant_without_bed`` is named "کودک بدون تخت" in their own ``rooms`` list,
   and ``infant_without_chair`` is "نوزاد". Trusting the key names swaps a child
   price for an infant one.
@@ -144,21 +145,50 @@ def weekday(parts: Optional[tuple[int, int, int]]) -> str:
     return WEEKDAYS[date(*jalali_to_gregorian(*parts)).weekday()]
 
 
-def _halves(price: Optional[Price]) -> tuple[str, str, Optional[str]]:
+def rial_of(price: Optional[Price]) -> int:
+    """The local half of a price in rial, or zero where there is none.
+
+    The client asked for rial and these sites all quote toman, so every figure
+    we send them is converted. It happens here and nowhere else: the conversion
+    used to live inside :func:`price_halves`, and the two surfaces added later —
+    the ``rooms`` list and the second structure's ``start_price`` — were each
+    written without it and each sent toman for months.
+
+    A price quoted in anything but toman is **not** converted. It is the
+    foreign half of the price, and multiplying 590 dollars by ten is a worse
+    answer than the 590 it started as.
+
+    Example:
+        >>> from crawler.schema.output_models import Money
+        >>> rial_of(Price(local=Money(92_000_000, "IRT")))
+        920000000
+        >>> rial_of(Price(local=Money(590, "USD")))
+        0
+        >>> rial_of(None)
+        0
+    """
+    if price is None or price.local is None:
+        return 0
+    if price.local.currency != CURRENCY_TOMAN:
+        return 0
+    return int(round(price.local.amount * RIAL_PER_TOMAN))
+
+
+def price_halves(price: Optional[Price]) -> tuple[str, str, Optional[str]]:
     """One price as their rial string, their foreign string, and its currency.
 
     Example:
         >>> from crawler.schema.output_models import Money
-        >>> _halves(Price(local=Money(92_000_000, "IRT"), foreign=Money(135, "USD")))
+        >>> price_halves(Price(local=Money(92_000_000, "IRT"), foreign=Money(135, "USD")))
         ('920000000', '135.00', 'دلار')
-        >>> _halves(None)
+        >>> price_halves(Price(local=Money(590, "USD")))
+        ('0', '590.00', 'دلار')
+        >>> price_halves(None)
         ('0', '0.00', None)
     """
     if price is None:
         return "0", "0.00", None
-    rial = "0"
-    if price.local is not None and price.local.currency == CURRENCY_TOMAN:
-        rial = str(int(round(price.local.amount * RIAL_PER_TOMAN)))
+    rial = str(rial_of(price))
 
     foreign, name = "0.00", None
     money = price.foreign or (
@@ -168,21 +198,6 @@ def _halves(price: Optional[Price]) -> tuple[str, str, Optional[str]]:
         foreign = f"{money.amount:.2f}"
         name = CURRENCY_NAMES.get(money.currency, money.currency)
     return rial, foreign, name
-
-
-def _toman(price: Optional[Price]) -> int:
-    """What their ``rooms`` list carries: the same amount in toman.
-
-    Example:
-        >>> from crawler.schema.output_models import Money
-        >>> _toman(Price(local=Money(92_000_000, "IRT")))
-        92000000
-        >>> _toman(None)
-        0
-    """
-    if price is None or price.local is None or price.local.currency != CURRENCY_TOMAN:
-        return 0
-    return int(round(price.local.amount))
 
 
 def _hotel(hotel: Hotel, ids: IdStore, site: str) -> dict:
@@ -245,7 +260,7 @@ def offer_to_object(
     by_prefix = {prefix: room for prefix, room, _, _, _, _ in ROOMS}
     currency: Optional[str] = None
     for prefix in PRICE_ORDER:
-        rial, foreign, name = _halves(offer.prices.get(by_prefix[prefix]))
+        rial, foreign, name = price_halves(offer.prices.get(by_prefix[prefix]))
         out[f"{prefix}_price_r"] = rial
         out[f"{prefix}_price_a"] = foreign
         currency = currency or name
@@ -261,15 +276,15 @@ def offer_to_object(
     out["rooms"] = [
         {
             "name": persian,
-            "price": _toman(offer.prices.get(room)),
-            "currency_price": _halves(offer.prices.get(room))[1].rstrip("0").rstrip(".")
-            if _halves(offer.prices.get(room))[1] != "0.00" else "",
+            "price": rial_of(offer.prices.get(room)),
+            "currency_price": price_halves(offer.prices.get(room))[1].rstrip("0").rstrip(".")
+            if price_halves(offer.prices.get(room))[1] != "0.00" else "",
             "currency_name": currency or "",
             "coefficient": coefficient,
             "index": index,
             "order": order,
             "type": ROOM_TYPE[index],
-            "final_price": _toman(offer.prices.get(room)),
+            "final_price": rial_of(offer.prices.get(room)),
             "capacity": DEFAULT_CAPACITY,
         }
         for _, room, persian, order, coefficient, index in ROOMS

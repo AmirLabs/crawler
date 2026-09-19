@@ -36,7 +36,12 @@ from typing import Optional
 from crawler.extraction.readers.places import is_a_departure_city
 from crawler.schema.agencies import agency_info, agency_name, host_of
 from crawler.schema.identifiers import PROVIDER_ID, IdStore
-from crawler.schema.safarbank import CURRENCY_NAMES, packed_date, to_jalali_parts
+from crawler.schema.safarbank import (
+    CURRENCY_NAMES,
+    packed_date,
+    price_halves,
+    to_jalali_parts,
+)
 from crawler.schema.output_models import (
     ROOM_DOUBLE,
     ROOM_SINGLE,
@@ -116,34 +121,45 @@ def _price_parts(offer: TourOffer) -> tuple[int, str, str]:
     started from 17,000,000, which is its infant fare: a child's price is not a
     price the tour can be bought at.
 
+    The three parts come from :func:`crawler.schema.safarbank.price_halves`,
+    the same function the first structure's price columns use, so the two
+    structures cannot drift apart about one tour. They had: a tour sold only in
+    dollars sent ``0`` and ``590.00`` in the first structure and a bare ``590``
+    in the local field here, with nothing to say it was not rial.
+
+    A tour with a toman price is preferred over one without, so "starts from"
+    stays a price in our own money wherever the site quotes one.
+
     Example:
         >>> from crawler.schema.output_models import Money, Price
         >>> offer = TourOffer(prices={"double": Price(
         ...     local=Money(amount=56790000.0, currency="IRT"),
         ...     foreign=Money(amount=225.0, currency="USD"))})
         >>> _price_parts(offer)
-        (56790000, '225.00', 'دلار')
+        (567900000, '225.00', 'دلار')
         >>> _price_parts(TourOffer())
         (0, '0.00', '')
         >>> cheap = Price(local=Money(amount=17000000.0, currency="IRT"))
         >>> _price_parts(TourOffer(prices={"infant": cheap}))
         (0, '0.00', '')
+        >>> only_dollars = Price(local=Money(amount=590.0, currency="USD"))
+        >>> _price_parts(TourOffer(prices={"double": only_dollars}))
+        (0, '590.00', 'دلار')
     """
-    cheapest: Optional[Price] = None
+    best: Optional[tuple[tuple[int, float], str, str, str]] = None
     for room, price in offer.prices.items():
         if room not in ADULT_ROOMS:
             continue
-        if price.local is None or price.local.amount is None:
+        rial, foreign, name = price_halves(price)
+        if rial == "0" and foreign == "0.00":
             continue
-        if cheapest is None or price.local.amount < cheapest.local.amount:
-            cheapest = price
-    if cheapest is None:
+        # A toman price sorts ahead of a foreign-only one, then by amount.
+        rank = (0, float(rial)) if rial != "0" else (1, float(foreign))
+        if best is None or rank < best[0]:
+            best = (rank, rial, foreign, name or "")
+    if best is None:
         return 0, "0.00", ""
-
-    foreign = cheapest.foreign
-    amount = f"{foreign.amount:.2f}" if foreign and foreign.amount else "0.00"
-    name = CURRENCY_NAMES.get(foreign.currency, "") if foreign else ""
-    return int(cheapest.local.amount), amount, name
+    return int(best[1]), best[2], best[3]
 
 
 def _tour_types(tour: Tour, offer: TourOffer) -> list[dict]:
@@ -365,7 +381,7 @@ def tour_to_listings(tour: Tour, ids: IdStore) -> list[dict]:
         ...         prices={"double": Price(local=Money(amount=amount, currency="IRT"))})
         >>> tour.offers = [offer(12, 90_000_000), offer(12, 70_000_000), offer(13, 80_000_000)]
         >>> [(o["start_date"], o["start_price"]["price"]) for o in tour_to_listings(tour, IdStore(path=None))]
-        [('1405-06-09', 70000000), ('1405-06-10', 80000000)]
+        [('1405-06-09', 700000000), ('1405-06-10', 800000000)]
     """
     cheapest: dict[str, TourOffer] = {}
     for offer in tour.offers:
