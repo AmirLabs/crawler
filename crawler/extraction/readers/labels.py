@@ -150,10 +150,15 @@ _DAYS_RE = re.compile(r"(\d{1,2})" + _GAP + r"روز")
 
 # Board codes as printed: "(B.B)", "خدمات:BB", "HB", "ALL". The dotted form is
 # common enough that stripping dots is part of reading it.
-_BOARD_RE = re.compile(
-    r"(?<![A-Za-z])(B\.?B|H\.?B|F\.?B|U\.?A\.?L|A\.?L\.?L|R\.?O)(?![A-Za-z])",
-    re.I,
-)
+#
+# The second L of "UALL" is optional and must stay ahead of the bare "ALL":
+# written without it, nahalgasht's "UALL" matched nothing at all — "UAL" was
+# refused for the L that followed it, and "ALL" for the U before it — so the
+# code was read as no board type, survived into the hotel name, and left
+# room_service empty on 1937 of that site's 2494 hotel rows.
+BOARD_CODES = r"B\.?B|H\.?B|F\.?B|U\.?A\.?L\.?L?|A\.?L\.?L|R\.?O"
+
+_BOARD_RE = re.compile(rf"(?<![A-Za-z])({BOARD_CODES})(?![A-Za-z])", re.I)
 
 # The same plans written out in Persian. Read because a site that spells the
 # plan never prints the code beside it: tahagasht writes "بدون پذیرایی" and
@@ -254,11 +259,17 @@ def detect_nights(text: str) -> Optional[int]:
 def detect_board_type(text: str) -> Optional[str]:
     """Read the meal plan code, normalised to letters only.
 
+    Every spelling of ultra all-inclusive answers ``UALL``. The sites write it
+    four ways between them and the client keys on the value, so "UAll" and
+    "UALL" arriving as two plans would split one board type in two.
+
     Example:
         >>> detect_board_type("هتل 3 ستاره (B.B) FORUM PARK")
         'BB'
         >>> detect_board_type("خدمات:HB")
         'HB'
+        >>> detect_board_type("خدمات:UALL"), detect_board_type("UAll"), detect_board_type("U.ALL")
+        ('UALL', 'UALL', 'UALL')
         >>> detect_board_type("بدون پذیرایی")
         'RO'
         >>> detect_board_type("نیم پانسیون")
@@ -268,7 +279,8 @@ def detect_board_type(text: str) -> Optional[str]:
     """
     match = _BOARD_RE.search(text)
     if match:
-        return match.group(1).replace(".", "").upper()
+        code = match.group(1).replace(".", "").upper()
+        return "UALL" if code.startswith("UAL") else code
     for pattern, value in _BOARD_WORDS:
         if pattern.search(text):
             return value
