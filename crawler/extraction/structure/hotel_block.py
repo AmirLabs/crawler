@@ -384,6 +384,41 @@ def _surrounding_text(block: Node, row_texts: list[str]) -> str:
     return wider if len(wider) <= _MAX_BLOCK_CHARS else own
 
 
+# Longer than any rating and shorter than the URLs, class lists and JSON blobs
+# that make up the rest of a card's attributes.
+_MAX_ATTRIBUTE_CHARS = 20
+
+
+def rating_in_attributes(block: Node) -> Optional[int]:
+    """A rating the block states in an attribute rather than in its text.
+
+    bisanseir draws its ratings as filled and empty icons and writes the number
+    nowhere a reader can see — except on the block itself, as
+    ``data-star="سه ستاره"``. Its 1216 hotel rows all carried no rating for it.
+
+    The value is what is read, never the attribute's name, so this is not keyed
+    on one site's spelling of ``data-star``. A value only counts if it reads as
+    a rating on its own, which a class list or an address does not.
+
+    Example:
+        >>> from selectolax.parser import HTMLParser
+        >>> tree = HTMLParser('<div data-star="سه ستاره"><i></i></div>')
+        >>> rating_in_attributes(tree.css_first("div"))
+        3
+        >>> plain = HTMLParser('<div class="hotel-card" id="h5"></div>')
+        >>> rating_in_attributes(plain.css_first("div")) is None
+        True
+    """
+    for node in [block, *block.css("*")]:
+        for value in (node.attributes or {}).values():
+            if not value or len(value) > _MAX_ATTRIBUTE_CHARS:
+                continue
+            found = detect_star_rating(value)
+            if found is not None:
+                return found
+    return None
+
+
 def read_hotel_block(container: RowContainer) -> HotelBlock:
     """Read the hotel facts that belong to every row in ``container``.
 
@@ -445,7 +480,7 @@ def read_hotel_block(container: RowContainer) -> HotelBlock:
 
     return HotelBlock(
         name=name,
-        star_rating=detect_star_rating(around),
+        star_rating=detect_star_rating(around) or rating_in_attributes(block),
         board_type=detect_board_type(around),
         nights=detect_nights(around),
         path=_element_path(block),

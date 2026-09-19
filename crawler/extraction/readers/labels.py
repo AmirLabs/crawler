@@ -135,9 +135,23 @@ _ROOM_RE: tuple[tuple[re.Pattern[str], str], ...] = tuple(
     (re.compile(pattern), value) for pattern, value in _ROOM_PATTERNS
 )
 
-# "3 ستاره" / "۴ ستاره" / "هتل: 4 ستاره", and the "5*" a rates table puts in
-# its grade column. The digit may be attached to the word.
-_STAR_RE = re.compile(r"(\d)" + _GAP + r"(?:ستاره|\*)")
+# A rating spelled out rather than written as a digit. bisanseir states every
+# one of its hotels this way — "سه ستاره" on the block and three filled icons
+# beside it — which is why 1216 of its 1216 hotel rows carried no star_code.
+#
+# Only one to five, the range a rating can hold, so nothing wider can arrive
+# through this door than through the digits.
+_STAR_WORDS: dict[str, int] = {"یک": 1, "دو": 2, "سه": 3, "چهار": 4, "پنج": 5}
+
+# "3 ستاره" / "۴ ستاره" / "هتل: 4 ستاره" / "سه ستاره", and the "5*" a rates
+# table puts in its grade column. The digit may be attached to the word.
+#
+# A spelled number has to start a word, or "پنجشنبه" and "دوشنبه" would each
+# offer their first syllable to any "ستاره" that followed. A digit needs no
+# such guard and must not have one: "هتل3 ستاره" is written without a space.
+_STAR_RE = re.compile(
+    r"(\d|(?<![؀-ۿ])(?:" + "|".join(_STAR_WORDS) + r"))" + _GAP + r"(?:ستاره|\*)"
+)
 
 # "7 شب" / "2 شب 3 شب" / "مدت تور: 7 شب و 8 روز". Nights, not days: the sites
 # quote both and the schema stores nights.
@@ -210,13 +224,18 @@ def detect_star_rating(text: str) -> Optional[int]:
         3
         >>> detect_star_rating("۴ ستاره")
         4
+        >>> detect_star_rating("سه ستاره"), detect_star_rating("پنج ستاره")
+        (3, 5)
+        >>> detect_star_rating("پنجشنبه ستاره") is None
+        True
         >>> detect_star_rating("هتل پارسه") is None
         True
     """
     match = _STAR_RE.search(normalize_digits(text))
     if not match:
         return None
-    stars = int(match.group(1))
+    token = match.group(1)
+    stars = int(token) if token.isdigit() else _STAR_WORDS[token]
     return stars if 1 <= stars <= 5 else None
 
 
