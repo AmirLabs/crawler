@@ -38,6 +38,7 @@ from selectolax.parser import Node
 
 from crawler.extraction.structure.html_rows import RowContainer, _element_path
 from crawler.extraction.readers.labels import (
+    BOARD_CODES,
     detect_board_type,
     detect_nights,
     detect_room_type,
@@ -112,8 +113,7 @@ _ONLY_A_DURATION = re.compile(r"(?:ستاره|شب|روز|اقامت|و)*")
 # "هتل 4 ستاره (ALL) BABAYLON" where the name is BABAYLON.
 _A_GRADE = re.compile(r"[\d۰-۹٠-٩]+" + r"[\s\u200c]*" + r"ستاره")
 _A_BOARD = re.compile(
-    r"\(?\s*(?<![A-Za-z])(?:B\.?B|H\.?B|F\.?B|U\.?A\.?L|A\.?L\.?L|R\.?O)(?![A-Za-z])\s*\)?",
-    re.I,
+    rf"\(?\s*(?<![A-Za-z])(?:{BOARD_CODES})(?![A-Za-z])\s*\)?", re.I,
 )
 # What is left when a fragment described a hotel without ever naming one.
 _NAMES_NOTHING = re.compile(r"(?:هتل|اقامتگاه|هاستل|مهمانپذیر|ویلا|hotel|resort|hostel)*", re.I)
