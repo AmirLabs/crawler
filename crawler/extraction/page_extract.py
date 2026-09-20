@@ -47,6 +47,10 @@ from crawler.extraction.structure.html_rows import (
     find_row_containers,
     offer_blocks,
 )
+from crawler.extraction.structure.date_calendar import (
+    package_rooms,
+    read_calendar,
+)
 from crawler.extraction.structure.json_paths import flatten_json
 from crawler.extraction.structure.tables import find_rates_tables
 from crawler.extraction.models import (
@@ -314,6 +318,28 @@ def read_page_fields(
     return fields
 
 
+def _read_calendar(page: ExtractedPage, today: Optional[date]) -> list:
+    """The departures the page states as data, minus the ones already gone.
+
+    Read after the rows because the rows are what name the price columns, and
+    judged against the same clock the rows are: a calendar is a list of dates
+    a page was willing to print, not a promise that all of them are still for
+    sale.
+    """
+    rooms = package_rooms([
+        row.fields["room_type"].value
+        for row in page.rows + page.expired_rows
+        if row.fields.get("room_type") and row.fields["room_type"].value
+    ])
+    found = read_calendar(page.embedded_json, rooms)
+    live = [entry for entry in found if _still_to_come(entry.jalali, today)]
+    if found:
+        page.notes.append(
+            f"{len(live)} of {len(found)} departures came from an embedded calendar"
+        )
+    return live
+
+
 def extract_page_from_html(
     url: str,
     html: str,
@@ -386,6 +412,7 @@ def extract_page_from_html(
     rows, added = apply_page_facts(rows, facts)
     page.rows, page.expired_rows = split_by_availability(rows, today)
     _drop_the_hotel_from_destination(page)
+    page.calendar = _read_calendar(page, today)
     if added:
         page.notes.append(f"filled {added} fields from facts stated once for the page")
     if len(rows) != before:

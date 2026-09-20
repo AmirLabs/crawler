@@ -32,7 +32,7 @@ from datetime import date, timedelta
 from typing import Any, Optional
 
 from crawler.extraction.models import ExtractedPage, ExtractedRow
-from crawler.extraction.readers.dates import gregorian_to_jalali
+from crawler.extraction.readers.dates import gregorian_to_jalali, jalali_to_gregorian
 from crawler.extraction.readers.labels import detect_nights
 from crawler.schema.output_models import (
     ROOM_DOUBLE,
@@ -481,6 +481,41 @@ def _field_methods(page: ExtractedPage) -> dict[str, str]:
     return methods
 
 
+def _calendar_offer(entry) -> TourOffer:
+    """One departure a page stated as data, as the listing needs to see it.
+
+    The price goes in under a double room because that is the room a tour is
+    quoted from, and because the listing reads only the adult rooms. Nothing
+    else is known about it: a calendar names no hotel, so this must never
+    reach the package structure, which is one row per hotel and per room.
+
+    Example:
+        >>> from crawler.extraction.structure.date_calendar import Departure
+        >>> offer = _calendar_offer(Departure("1405-06-30", 45_000_000.0, "IRT",
+        ...                                   255.0, "EUR"))
+        >>> offer.departure.iso, offer.prices["double"].local.amount
+        ('2026-09-21', 45000000.0)
+        >>> offer.hotels
+        []
+    """
+    year, month, day = (int(part) for part in entry.jalali.split("-"))
+    gregorian = jalali_to_gregorian(year, month, day)
+    return TourOffer(
+        departure=TourDate(
+            raw=entry.jalali,
+            iso=date(*gregorian).isoformat(),
+            jalali=entry.jalali,
+        ),
+        prices={ROOM_DOUBLE: Price(
+            local=(Money(amount=entry.local, currency=entry.local_currency)
+                   if entry.local and entry.local_currency else None),
+            foreign=(Money(amount=entry.foreign, currency=entry.foreign_currency)
+                     if entry.foreign and entry.foreign_currency else None),
+            raw=entry.jalali,
+        )},
+    )
+
+
 def build_tour(page: ExtractedPage) -> Tour:
     """Convert one extracted page into the tour it describes.
 
@@ -534,6 +569,7 @@ def build_tour(page: ExtractedPage) -> Tour:
             _build_offer(rows, nights_from_name=nights_from_name)
             for rows in groups.values()
         ],
+        listing_only=[_calendar_offer(entry) for entry in page.calendar],
         provenance=Provenance(
             source_url=page.url,
             fetched_at=page.fetched_at,

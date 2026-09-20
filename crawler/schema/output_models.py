@@ -62,6 +62,10 @@ ROOM_TYPES = (
     ROOM_INFANT,
 )
 
+# The rooms an adult can be sold. A child's or an infant's fare is cheaper and
+# is not what a tour starts from.
+ADULT_ROOMS: frozenset[str] = frozenset({ROOM_DOUBLE, ROOM_SINGLE, ROOM_TRIPLE})
+
 # How the traveller gets there. Kept coarse on purpose: this is the field the
 # search engine filters on, while the carrier name and journey details live on
 # the offer. The target sites sell these three and nothing else.
@@ -413,6 +417,13 @@ class Tour:
 
     agency: Agency = field(default_factory=Agency)
     offers: list[TourOffer] = field(default_factory=list)
+
+    # Departures known only as a line in a listing: a date and what it starts
+    # from, with no hotel and no room behind it. A page can state these as
+    # data while its rows state only one date, so they fill the gaps in the
+    # listing and never become packages, which are per hotel and per room.
+    listing_only: list[TourOffer] = field(default_factory=list)
+
     provenance: Provenance = field(default_factory=Provenance)
 
     def to_dict(self) -> dict:

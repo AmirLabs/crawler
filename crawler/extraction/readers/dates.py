@@ -183,6 +183,59 @@ def jalali_to_gregorian(jy: int, jm: int, jd: int) -> tuple[int, int, int]:
     return gy, gm, gd
 
 
+# A whole date standing alone, the way a JSON object keys one departure:
+# "2026-09-21" from nahalgasht.com, or "1405-06-30" where a site keys in its
+# own calendar.
+_KEY_DATE = re.compile(r"^\s*(\d{4})-(\d{1,2})-(\d{1,2})\s*$")
+
+# Above this a year is Gregorian; the Jalali range below it is the one
+# :mod:`crawler.extraction.date_links` already trusts in a query value.
+_GREGORIAN_FROM = 1600
+_JALALI_RANGE = (1300, 1499)
+
+
+def dates_in_keys(data: object) -> list[str]:
+    """Every departure a JSON object names in its keys, as a Jalali date.
+
+    A page can publish its whole departure calendar as data rather than as
+    text. nahalgasht.com keys one by Gregorian date and lets the browser show
+    it in Jalali, so the date never appears on screen for a reader to find and
+    never appears in the flattened paths either — it is the key, not a value.
+    Measured over 40 of its dateless pages, two carried such a calendar and
+    those two held 15 departures between them.
+
+    The calendar is read from the key, so either one works: a four-digit year
+    at or above 1600 is Gregorian and is converted, one in the 1300s or 1400s
+    is already Jalali and is kept.
+
+    Example:
+        >>> dates_in_keys({"2026-09-21": [], "2026-09-30": []})
+        ['1405-06-30', '1405-07-08']
+        >>> dates_in_keys({"1405-06-30": []})
+        ['1405-06-30']
+        >>> dates_in_keys({"tour_id": 63736, "2026-13-01": []})
+        []
+        >>> dates_in_keys(None)
+        []
+    """
+    if not isinstance(data, dict):
+        return []
+    found: set[str] = set()
+    for key in data:
+        match = _KEY_DATE.match(normalize_digits(str(key)))
+        if not match:
+            continue
+        year, month, day = (int(part) for part in match.groups())
+        if not (1 <= month <= 12 and 1 <= day <= 31):
+            continue
+        if year >= _GREGORIAN_FROM:
+            year, month, day = gregorian_to_jalali(year, month, day)
+        elif not _JALALI_RANGE[0] <= year <= _JALALI_RANGE[1]:
+            continue
+        found.add(f"{year:04d}-{month:02d}-{day:02d}")
+    return sorted(found)
+
+
 @dataclass
 class DateText:
     """One date as a page printed it, before any year has been guessed.

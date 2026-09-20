@@ -167,6 +167,11 @@ class ExtractedPage:
     # is itself a signal that the rules did not match this layout.
     rows: list[ExtractedRow] = field(default_factory=list)
 
+    # Departures the page states as data rather than as rows — a date and what
+    # it starts from, with no package behind it. They fill the listing where
+    # the rows say nothing; they are never packages themselves.
+    calendar: list = field(default_factory=list)
+
     # Offers that were read but have already departed. Kept apart rather than
     # dropped so an empty page can explain itself: "nothing was read" and "four
     # departures were read and all four have left" need different fixes.
