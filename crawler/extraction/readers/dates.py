@@ -389,6 +389,52 @@ def find_dates(text: str) -> list[DateText]:
     return sorted(found, key=lambda d: d.start)
 
 
+# How far ahead a month may sit before it reads as one already gone. Half a
+# year: a page advertising a departure more than six months out is rarer than
+# one whose month has just passed, and this is the only thing that tells
+# "فروردین" read in اسفند from "تیر" read in مهر.
+_MONTHS_AHEAD = 6
+
+
+def month_has_passed(raw: object, today: Optional[date] = None) -> Optional[bool]:
+    """Whether a departure stated as a month alone is behind us, or ``None``.
+
+    A page that says only "مهر ماه" sells every day of that month, so no day
+    can be put in ``start_date`` without inventing one. The month still
+    answers the one question that matters for keeping the row: a tour whose
+    month has gone cannot be bought, whichever day of it was meant.
+
+    The year is never stated, so the month is read as the nearest one: up to
+    six months ahead is still to come, and further ahead than that is behind
+    us. Without this "فروردین" read in اسفند would be dropped as eleven months
+    late instead of kept as one month early.
+
+    ``None`` means the text states no month at all, which is not the same as
+    a month that has passed.
+
+    Example:
+        >>> march = date(2026, 9, 20)            # 1405-06-29, شهریور
+        >>> month_has_passed("مهر ماه", march)
+        False
+        >>> month_has_passed("شهریور ماه", march)
+        False
+        >>> month_has_passed("تیر ماه", march)
+        True
+        >>> month_has_passed("فروردین ماه", date(2027, 3, 10))   # 1405-12-19
+        False
+        >>> month_has_passed("هر روز هفته", march) is None
+        True
+    """
+    if not isinstance(raw, str):
+        return None
+    stated = next((found for found in find_dates(raw) if found.day is None), None)
+    if stated is None:
+        return None
+    today = today or date.today()
+    _, current, _ = gregorian_to_jalali(today.year, today.month, today.day)
+    return (stated.month - current) % 12 > _MONTHS_AHEAD
+
+
 def to_iso(parsed: DateText, today: Optional[date] = None) -> Optional[str]:
     """Turn a parsed date into an ISO Gregorian string, guessing the year.
 
