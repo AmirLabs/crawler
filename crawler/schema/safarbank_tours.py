@@ -43,9 +43,7 @@ from crawler.schema.safarbank import (
     to_jalali_parts,
 )
 from crawler.schema.output_models import (
-    ROOM_DOUBLE,
-    ROOM_SINGLE,
-    ROOM_TRIPLE,
+    ADULT_ROOMS,
     Price,
     Tour,
     TourOffer,
@@ -102,11 +100,6 @@ IRAN_COUNTRY_ID = "1"
 
 # Stands in for a missing departure inside api_id only, never in start_date.
 NO_DEPARTURE = "14000101"
-
-# The rooms an adult can be sold. A child's or an infant's fare is cheaper and
-# is not what a tour starts from.
-ADULT_ROOMS: frozenset[str] = frozenset({ROOM_DOUBLE, ROOM_SINGLE, ROOM_TRIPLE})
-
 
 def _price_parts(offer: TourOffer) -> tuple[int, str, str]:
     """The price a tour starts from, as their three ``start_price`` fields.
@@ -382,13 +375,42 @@ def tour_to_listings(tour: Tour, ids: IdStore) -> list[dict]:
         >>> tour.offers = [offer(12, 90_000_000), offer(12, 70_000_000), offer(13, 80_000_000)]
         >>> [(o["start_date"], o["start_price"]["price"]) for o in tour_to_listings(tour, IdStore(path=None))]
         [('1405-06-09', 700000000), ('1405-06-10', 800000000)]
+
+        A dateless row is the calendar's own default view, so it goes where
+        there is a calendar and stays where there is none:
+
+        >>> undated = TourOffer(prices={"double": Price(
+        ...     local=Money(amount=95_000_000, currency="IRT"))})
+        >>> tour.offers = [undated]
+        >>> tour.listing_only = [offer(20, 70_000_000)]
+        >>> [o["start_date"] for o in tour_to_listings(tour, IdStore(path=None))]
+        ['1405-06-17']
+        >>> tour.listing_only = []
+        >>> [o["start_date"] for o in tour_to_listings(tour, IdStore(path=None))]
+        ['']
     """
+    # A calendar is the whole of what a page says about when it leaves, and
+    # the rows under it are one of those dates shown by default — every hotel
+    # of it, which is why they are not all at the price the calendar starts
+    # from. So a row that could not be dated is not a departure of its own.
+    # Which date it is cannot be recovered: three of nahalgasht's seven
+    # Antalya dates quote the same 235 euro, and its own script picks between
+    # them on the foreign half alone, landing on a date whose markup shows a
+    # different local price. Dropped rather than guessed at.
     cheapest: dict[str, TourOffer] = {}
     for offer in tour.offers:
         key = packed_date(to_jalali_parts(offer.departure.iso))
+        if not key and tour.listing_only:
+            continue
         best = cheapest.get(key)
         if best is None or _price_parts(offer)[0] < _price_parts(best)[0]:
             cheapest[key] = offer
+    # A calendar departure fills a gap and never wins a date the rows already
+    # answered: a row knows its hotel and its transport, and a calendar line
+    # knows neither, so replacing one with the other would lose more than the
+    # price it brings.
+    for offer in tour.listing_only:
+        cheapest.setdefault(packed_date(to_jalali_parts(offer.departure.iso)), offer)
     return [offer_to_listing(tour, offer, ids)
             for _, offer in sorted(cheapest.items())]
 
