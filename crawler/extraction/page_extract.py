@@ -318,6 +318,24 @@ def read_page_fields(
     return fields
 
 
+def _absolute_hotel_images(page: ExtractedPage) -> None:
+    """Make every hotel picture an address the client can fetch as it stands.
+
+    The markup writes it relative to the site — "/tour-management/hotels/..."
+    on nahalgasht — and whoever receives our JSON has no page to resolve it
+    against. It is joined here rather than where it is read, because that is
+    where the page's own URL is known.
+
+    The address is otherwise left exactly as written. Percent-encoding the
+    spaces in it looks tidier and breaks it: radingasht answers the raw form
+    and times out on the encoded one.
+    """
+    for row in page.rows + page.expired_rows:
+        field = row.fields.get("hotel_image")
+        if field is not None and isinstance(field.value, str) and field.value:
+            field.value = urljoin(page.url, field.value)
+
+
 def _read_calendar(page: ExtractedPage, today: Optional[date]) -> list:
     """The departures the page states as data, minus the ones already gone.
 
@@ -411,6 +429,7 @@ def extract_page_from_html(
     before = len(rows)
     rows, added = apply_page_facts(rows, facts)
     page.rows, page.expired_rows = split_by_availability(rows, today)
+    _absolute_hotel_images(page)
     _drop_the_hotel_from_destination(page)
     page.calendar = _read_calendar(page, today)
     if added:
