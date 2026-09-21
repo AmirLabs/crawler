@@ -421,6 +421,7 @@ def _build_offer(
                 star_rating=stay.get("star_rating"),
                 board_type=stay.get("board_type"),
                 nights=stay.get("nights"),
+                image_url=stay.get("image_url"),
             )
             for stay in stays
             if isinstance(stay, dict)

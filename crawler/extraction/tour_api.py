@@ -34,7 +34,7 @@ import json
 import re
 from datetime import datetime
 from typing import Any, Optional
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -229,7 +229,7 @@ def _legs(data: dict) -> tuple[Optional[dict], Optional[dict]]:
     return leaving or legs[0], coming or (legs[-1] if len(legs) > 1 else None)
 
 
-def _rows_from_bundles(data: dict) -> list[ExtractedRow]:
+def _rows_from_bundles(data: dict, page_url: str = "") -> list[ExtractedRow]:
     """One row per hotel per room type, which is the grain the client asked for.
 
     Example:
@@ -279,7 +279,7 @@ def _rows_from_bundles(data: dict) -> list[ExtractedRow]:
             put("hotel_star_rating", int(grades[0]) if grades else None, "accommodations[].grade")
             put("board_type", boards[0] if boards else None, "accommodations[].boardType")
             put("hotel_city", " + ".join(cities) if cities else None, "accommodations[].locationName")
-            put("hotels", [_stay(a) for a in stays] or None, "accommodations[]")
+            put("hotels", [_stay(a, page_url) for a in stays] or None, "accommodations[]")
             put("room_type", detect_room_type(entry.get("title") or ""), "prices[].title")
             put("price", price, "prices[].price")
             put("nights", nights, "stayCount")
@@ -297,7 +297,37 @@ def _rows_from_bundles(data: dict) -> list[ExtractedRow]:
     return rows
 
 
-def _stay(accommodation: dict) -> dict:
+# Where a hotel keeps its one picture, and the key that holds the address.
+# The gallery beside it is not read: a single image was what was asked for.
+_THUMBNAIL, _SOURCE = "thumbnail", "source"
+
+
+def _picture(accommodation: dict, page_url: str) -> Optional[str]:
+    """The hotel's own photograph, as an address the client can fetch.
+
+    The API parks it on the accommodation itself, so which hotel it belongs to
+    is stated rather than worked out. That matters: matched by name against the
+    markup instead, vanrosh.com's "BODRUM PARK RESORT" picks up the picture
+    labelled "SUNBAY PARK", and a wrong photograph reads as a right one.
+
+    The address is site-relative, so it is joined onto the page that named it.
+
+    Example:
+        >>> _picture({"thumbnail": {"source": "/Content/Upload/Images/a.webp"}},
+        ...          "https://www.alefbatour.com/tour/d/183385/x")
+        'https://www.alefbatour.com/Content/Upload/Images/a.webp'
+        >>> _picture({"thumbnail": {"source": ""}}, "https://x.com/t") is None
+        True
+        >>> _picture({}, "https://x.com/t") is None
+        True
+    """
+    source = (accommodation.get(_THUMBNAIL) or {}).get(_SOURCE)
+    if not isinstance(source, str) or not source.strip():
+        return None
+    return urljoin(page_url, source.strip())
+
+
+def _stay(accommodation: dict, page_url: str = "") -> dict:
     """One accommodation as the fields a hotel needs, nothing joined.
 
     The API states every hotel of a multi-city stay in full — its own grade,
@@ -309,7 +339,7 @@ def _stay(accommodation: dict) -> dict:
         >>> _stay({"name": "ده ادن", "latinName": "The Eden", "grade": 4.0,
         ...        "locationName": "بالی", "stayCount": 4,
         ...        "boardType": {"boardType": "BB"}})
-        {'name': 'ده ادن', 'name_latin': 'The Eden', 'star_rating': 4, 'city': 'بالی', 'board_type': 'BB', 'nights': 4}
+        {'name': 'ده ادن', 'name_latin': 'The Eden', 'star_rating': 4, 'city': 'بالی', 'board_type': 'BB', 'nights': 4, 'image_url': None}
     """
     grade = accommodation.get("grade")
     stay = accommodation.get("stayCount")
@@ -321,6 +351,7 @@ def _stay(accommodation: dict) -> dict:
         "city": accommodation.get("locationName"),
         "board_type": board,
         "nights": int(stay) if isinstance(stay, (int, float)) else None,
+        "image_url": _picture(accommodation, page_url),
     }
 
 
@@ -398,7 +429,7 @@ def enrich_from_api(page: ExtractedPage, data: dict) -> ExtractedPage:
             "transportation[].destination.city")
 
     page.unresolved_page_fields = unresolved(page.page_fields, PAGE_FIELDS)
-    page.rows = _rows_from_bundles(data)
+    page.rows = _rows_from_bundles(data, page.url)
     _stamp_transport(page.rows, outbound)
     page.notes.append(
         f"offers from the site's API: {len(page.rows)} rows"

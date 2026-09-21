@@ -204,9 +204,13 @@ def _hotel(hotel: Hotel, ids: IdStore, site: str) -> dict:
     """One hotel as they send it.
 
     Example:
-        >>> _hotel(Hotel(name="The Sukosol", city="بانکوک", star_rating=5, nights=2),
-        ...        IdStore(path=None), "tahagasht")["night"]
-        '2'
+        >>> out = _hotel(Hotel(name="The Sukosol", city="بانکوک", star_rating=5,
+        ...                    nights=2, image_url="https://x.com/a.webp"),
+        ...              IdStore(path=None), "tahagasht")
+        >>> out["night"], out["logo"]
+        ('2', 'https://x.com/a.webp')
+        >>> _hotel(Hotel(name="The Sukosol"), IdStore(path=None), "tahagasht")["logo"]
+        ''
     """
     return {
         "id": ids.hotel_id(site, hotel.name),
@@ -214,7 +218,9 @@ def _hotel(hotel: Hotel, ids: IdStore, site: str) -> dict:
         "name_en": hotel.name_latin or "",
         "trip_advisor": "0",
         "star_code": str(hotel.star_rating) if hotel.star_rating else "",
-        "logo": "",
+        # Their field for the hotel's one picture. Named logo, but it is the
+        # photograph of the building, which is what they asked us to send.
+        "logo": hotel.image_url or "",
         "region": "0",
         "type_code": "1",
         "city_name": hotel.city or "",
