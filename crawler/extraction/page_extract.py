@@ -47,6 +47,7 @@ from crawler.extraction.structure.html_rows import (
     find_row_containers,
     offer_blocks,
 )
+from crawler.extraction.embedded_offers import offers_in, rows_from_offers
 from crawler.extraction.structure.date_calendar import (
     package_rooms,
     read_calendar,
@@ -406,6 +407,18 @@ def extract_page_from_html(
 
     containers = find_row_containers(tree, page_url=url)
     blocks = offer_blocks(containers)
+
+    # A page can publish its packages as data and show none of them in its
+    # markup, which is why chakavaktravel came back empty. Read before the
+    # block finder gives up, and only where the data is actually that shape.
+    embedded = offers_in(page.embedded_json)
+    if embedded and not blocks and not table_rows:
+        page.rows, page.expired_rows = split_by_availability(
+            rows_from_offers(embedded, url), today)
+        page.notes.append(
+            f"{len(page.rows)} rows from {len(embedded)} offers the page embeds"
+        )
+        return page
 
     if not blocks and not table_rows:
         if not containers:
