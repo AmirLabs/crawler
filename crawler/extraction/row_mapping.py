@@ -102,6 +102,7 @@ _BLOCK_FIELDS: tuple[tuple[str, str], ...] = (
     ("star_rating", "hotel_star_rating"),
     ("board_type", "board_type"),
     ("nights", "nights"),
+    ("image_url", "hotel_image"),
 )
 # "2 شب" — a length the card is priced at. Used only to tell one card that
 # sells two lengths from one that sells a single stay.

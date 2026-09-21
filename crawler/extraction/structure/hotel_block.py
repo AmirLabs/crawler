@@ -34,7 +34,7 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
-from selectolax.parser import Node
+from selectolax.parser import HTMLParser, Node
 
 from crawler.extraction.structure.html_rows import RowContainer, _element_path
 from crawler.extraction.readers.labels import (
@@ -291,13 +291,14 @@ class HotelBlock:
 
     Example:
         >>> HotelBlock(name="The Train Resort", board_type="BB", path="div.hotel")
-        HotelBlock(name='The Train Resort', star_rating=None, board_type='BB', nights=None, path='div.hotel')
+        HotelBlock(name='The Train Resort', star_rating=None, board_type='BB', nights=None, image_url=None, path='div.hotel')
     """
 
     name: Optional[str] = None
     star_rating: Optional[int] = None
     board_type: Optional[str] = None
     nights: Optional[int] = None
+    image_url: Optional[str] = None
     path: Optional[str] = None
 
 
@@ -419,6 +420,90 @@ def rating_in_attributes(block: Node) -> Optional[int]:
     return None
 
 
+# An img whose src is a placeholder until the page scrolls. The address the
+# browser will swap in is parked in one of these.
+_LAZY_SOURCES = ("data-src", "data-lazy-src", "data-original", "data-lazy")
+
+# How far above the block to look. nahalgasht keeps the photograph beside the
+# text rather than inside it, so its hotel is one level up; going further
+# reaches the page's own banner, which is a picture of the destination.
+_IMAGE_LEVELS = 1
+
+
+def _names_a_file(address: str) -> bool:
+    """Whether an address ends in something, rather than in a directory.
+
+    bisanseir writes ``src="/media/"`` for the 16 of its 45 hotels that have
+    no photograph, and that resolves to a folder which answers 403. An address
+    naming no file is the site saying it has no picture.
+
+    Example:
+        >>> _names_a_file("/media/hotel/2026/07/25/grand.jpg")
+        True
+        >>> _names_a_file("/media/")
+        False
+    """
+    path = address.split("?")[0].split("#")[0]
+    return bool(path) and not path.endswith("/")
+
+
+def _address(image: Node) -> Optional[str]:
+    """Where an img really points, past any placeholder it was served with.
+
+    Example:
+        >>> tree = HTMLParser('<img src="data:image/svg+xml;base64,AAA"'
+        ...                   ' data-src="/photos/oz-firat.jpg">')
+        >>> _address(tree.css_first("img"))
+        '/photos/oz-firat.jpg'
+        >>> _address(HTMLParser('<img src="/media/">').css_first("img")) is None
+        True
+    """
+    attributes = image.attributes or {}
+    for key in ("src", *_LAZY_SOURCES):
+        value = (attributes.get(key) or "").strip()
+        if value and not value.startswith("data:") and _names_a_file(value):
+            return value
+    return None
+
+
+def image_in_block(block: Node) -> Optional[str]:
+    """The photograph this block shows of its hotel, if it shows one.
+
+    Taken from the block rather than matched against the page by name, because
+    a name match is not safe: vanrosh.com labels the picture beside "BODRUM
+    PARK RESORT" as "SUNBAY PARK", and handing over the wrong building reads
+    as a right answer. Scoped this way it is the site itself saying which
+    hotel the picture belongs to.
+
+    Above the block, a picture is taken only where there is exactly one — that
+    is what makes it this hotel's. bisanseir gives the 16 of its 45 hotels
+    that have no photograph an empty ``src``, and its hotels are siblings, so
+    reaching up without this returned the neighbour's building for all of
+    them: thirteen hotels shown as The Grand Day Night.
+
+    Example:
+        >>> tree = HTMLParser('<div class="hotel"><span>هتل آمون</span>'
+        ...                   '<img src="/photos/amon.jpg"></div>')
+        >>> image_in_block(tree.css_first("div.hotel"))
+        '/photos/amon.jpg'
+        >>> beside = HTMLParser('<div class="row"><div class="hotel">a</div>'
+        ...                     '<img src="/photos/one.jpg"></div>')
+        >>> image_in_block(beside.css_first("div.hotel"))
+        '/photos/one.jpg'
+        >>> crowd = HTMLParser('<div class="row"><div class="hotel">a</div>'
+        ...                    '<img src="/a.jpg"><img src="/b.jpg"></div>')
+        >>> image_in_block(crowd.css_first("div.hotel"))
+        >>> image_in_block(HTMLParser('<div>no picture</div>').css_first("div"))
+    """
+    node, level = block, 0
+    while node is not None and level <= _IMAGE_LEVELS:
+        found = [a for a in (_address(i) for i in node.css("img")) if a]
+        if found and (level == 0 or len(found) == 1):
+            return found[0]
+        node, level = node.parent, level + 1
+    return None
+
+
 def read_hotel_block(container: RowContainer) -> HotelBlock:
     """Read the hotel facts that belong to every row in ``container``.
 
@@ -483,5 +568,6 @@ def read_hotel_block(container: RowContainer) -> HotelBlock:
         star_rating=detect_star_rating(around) or rating_in_attributes(block),
         board_type=detect_board_type(around),
         nights=detect_nights(around),
+        image_url=image_in_block(block),
         path=_element_path(block),
     )
