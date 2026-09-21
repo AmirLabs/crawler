@@ -20,9 +20,11 @@ serves it; a page that publishes anything else is left to the markup readers.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 
+from crawler.extraction.date_links import DateLink
 from crawler.extraction.models import (
     METHOD_EXACT_KEY,
     ExtractedField,
@@ -43,6 +45,9 @@ from crawler.schema.output_models import (
 # great deal of JSON, and only this shape is a price list.
 _OFFERS = "hotel_data"
 _REQUIRED = ("start_date", "hotels")
+
+# A date as the offers write it: "1405/07/18".
+_SLASH_DATE = re.compile(r"^(\d{4})/(\d{1,2})/(\d{1,2})$")
 
 # What each price key sells, in the order the client's rooms are named.
 _ROOMS: tuple[tuple[str, str, str], ...] = (
@@ -75,6 +80,41 @@ def offers_in(blobs: list[dict]) -> Optional[list[dict]]:
             if isinstance(first, dict) and all(k in first for k in _REQUIRED):
                 return found
     return None
+
+
+def offer_date_links(blobs: list[dict], page_url: str) -> list[DateLink]:
+    """The other departures listed beside the offers, as ``?date=`` links.
+
+    The offers hold the date on screen only; every date sits in a list beside
+    them, and the server answers ``?date=1405/07/18`` with that date's offers.
+    Measured on chakavaktravel: 29 departures to come, 9 read.
+
+    Example:
+        >>> offer_date_links([{"data": {"filter": ["1405/07/11", "1405/07/18", "1405/07/18"],
+        ...     "hotel_data": [{"start_date": "1405/07/11", "hotels": {}}]}}], "https://x.com/tour/a")
+        [DateLink(url='https://x.com/tour/a?date=1405/07/11', date='1405-07-11', replaces_this_page=True), DateLink(url='https://x.com/tour/a?date=1405/07/18', date='1405-07-18', replaces_this_page=True)]
+        >>> offer_date_links([{"title": "تور کیش"}], "https://x.com/tour/a")
+        []
+    """
+    base = page_url.split("?")[0]
+    for blob in blobs:
+        for holder in (blob, blob.get("data")):
+            if not isinstance(holder, dict) or offers_in([holder]) is None:
+                continue
+            for value in holder.values():
+                if not isinstance(value, list) or not value:
+                    continue
+                parts = [_SLASH_DATE.match(str(item)) for item in value]
+                if not all(parts):
+                    continue
+                links: dict[str, DateLink] = {}
+                for raw, found in zip(value, parts):
+                    jalali = "-".join(f"{int(n):02d}" for n in found.groups())
+                    links.setdefault(jalali, DateLink(
+                        url=f"{base}?date={quote(str(raw), safe='/')}",
+                        date=jalali, replaces_this_page=True))
+                return list(links.values())
+    return []
 
 
 def _number(value: Any) -> Optional[float]:

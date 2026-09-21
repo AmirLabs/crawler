@@ -47,7 +47,7 @@ from crawler.extraction.structure.html_rows import (
     find_row_containers,
     offer_blocks,
 )
-from crawler.extraction.embedded_offers import offers_in, rows_from_offers
+from crawler.extraction.embedded_offers import offer_date_links, offers_in, rows_from_offers
 from crawler.extraction.structure.date_calendar import (
     package_rooms,
     read_calendar,
@@ -747,7 +747,8 @@ async def _add_other_dates(
     shape writes the date into the link. The sibling shape does not, so those
     are fetched and judged afterwards, as they always were.
     """
-    links = find_date_links(page.html_raw or "", page.url)
+    links = find_date_links(page.html_raw or "", page.url) \
+        or offer_date_links(page.embedded_json, page.url)
     if not links:
         return page
 
