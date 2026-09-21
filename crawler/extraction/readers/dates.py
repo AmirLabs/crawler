@@ -395,6 +395,47 @@ def find_dates(text: str) -> list[DateText]:
 # "فروردین" read in اسفند from "تیر" read in مهر.
 _MONTHS_AHEAD = 6
 
+# A season is read as its last month: it is over once that month is.
+_SEASONS = {"بهار": 3, "تابستان": 6, "پاییز": 9, "پائیز": 9, "زمستان": 12}
+
+# A whole caption value naming a month or a season and nothing else: "ویژه دی", "تابستان 1405".
+_PERIOD_RE = re.compile(
+    r"^(?:ویژه\s*)?(?P<name>" + "|".join([*_SEASONS, _MONTH_ALTERNATION]) + r")"
+    r"(?:\s*ماه)?(?:\s*(?P<year>\d{4}))?$"
+)
+
+
+def find_period(text: str) -> Optional[DateText]:
+    """A caption value that names only a month or a season, as a dayless date.
+
+    Anchored to the whole value, since "دی" or "تابستان" inside a sentence is prose.
+
+    Example:
+        >>> find_period("ویژه زمستان")
+        DateText(raw='ویژه زمستان', month=12, day=None, year=None, time=None, start=0, end=11)
+        >>> find_period("تابستان ۱۴۰۵").year
+        1405
+        >>> find_period("ویژه دی").month
+        10
+        >>> find_period("سفری به یاد ماندنی در تابستان") is None
+        True
+    """
+    value = " ".join(normalize_digits(text or "").split())
+    match = _PERIOD_RE.match(value)
+    if match is None:
+        return None
+    name = match.group("name")
+    year = match.group("year")
+    return DateText(
+        raw=value,
+        month=_SEASONS.get(name) or JALALI_MONTHS[name],
+        day=None,
+        year=int(year) if year else None,
+        time=None,
+        start=0,
+        end=len(value),
+    )
+
 
 def month_has_passed(raw: object, today: Optional[date] = None) -> Optional[bool]:
     """Whether a departure stated as a month alone is behind us, or ``None``.
@@ -422,16 +463,25 @@ def month_has_passed(raw: object, today: Optional[date] = None) -> Optional[bool
         True
         >>> month_has_passed("فروردین ماه", date(2027, 3, 10))   # 1405-12-19
         False
+        >>> month_has_passed("ویژه تابستان", march), month_has_passed("ویژه زمستان", march)
+        (False, False)
+        >>> month_has_passed("ویژه پاییز", date(2027, 4, 1))      # 1406-01-12
+        True
+        >>> month_has_passed("تابستان 1404", march)
+        True
         >>> month_has_passed("هر روز هفته", march) is None
         True
     """
     if not isinstance(raw, str):
         return None
     stated = next((found for found in find_dates(raw) if found.day is None), None)
+    stated = stated or find_period(raw)
     if stated is None:
         return None
     today = today or date.today()
-    _, current, _ = gregorian_to_jalali(today.year, today.month, today.day)
+    year, current, _ = gregorian_to_jalali(today.year, today.month, today.day)
+    if stated.year is not None:
+        return (stated.year, stated.month) < (year, current)
     return (stated.month - current) % 12 > _MONTHS_AHEAD
 
 

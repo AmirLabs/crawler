@@ -44,10 +44,12 @@ from crawler.extraction.models import METHOD_HEURISTIC_HTML, ExtractedField
 from crawler.extraction.readers.dates import (
     DateText,
     find_dates,
+    find_period,
     gregorian_to_jalali,
     to_iso,
 )
 from crawler.extraction.readers.labels import _GAP, _ZWNJ, detect_nights, detect_star_rating
+from crawler.extraction.readers.prices import normalize_digits
 from crawler.extraction.target_fields import ROW_FIELDS, unresolved
 from crawler.extraction.readers.transport import (
     find_airline,
@@ -107,6 +109,9 @@ _LABEL_WINDOW = 240
 # labels its date says only that; a sentence that happens to contain the word
 # is prose, and reading a date out of it is the page-text rule's job.
 _MAX_CAPTION_CHARS = 40
+
+# "1 تا 30 مهر" is every day of a window, not a departure; reading it gave 30 مهر.
+_DAY_RANGE = re.compile(r"\d{1,2}" + _GAP + r"(?:تا|الی)" + _GAP + r"\d{1,2}")
 
 # A hotels section is found by its heading. The names under it are short; a
 # long run is the description that follows them.
@@ -319,6 +324,12 @@ def _caption_value(node, captions: tuple[re.Pattern, ...]) -> list[DateText]:
         >>> found = _caption_value(tree.css_first("span"), _DEPARTURE_CAPTIONS)
         >>> [(d.day, d.month) for d in found]
         [(15, 6)]
+        >>> tree = HTMLParser('<div><span>تاریخ حرکت</span><span>1 تا 30 مهر</span></div>')
+        >>> _caption_value(tree.css_first("span"), _DEPARTURE_CAPTIONS)
+        []
+        >>> tree = HTMLParser('<div><span>تاریخ حرکت</span><span>ویژه زمستان</span></div>')
+        >>> [(d.raw, d.month, d.day) for d in _caption_value(tree.css_first("span"), _DEPARTURE_CAPTIONS)]
+        [('ویژه زمستان', 12, None)]
     """
     own = _clean(node.text(deep=False))
     if not own or len(own) > _MAX_CAPTION_CHARS:
@@ -331,9 +342,14 @@ def _caption_value(node, captions: tuple[re.Pattern, ...]) -> list[DateText]:
     places += [_clean(after.text(deep=True)) for after in _following(node)]
     if node.parent is not None:
         places.append(_clean(node.parent.text(deep=True))[len(own):])
+    places += _card_above(node)
 
+    period: Optional[DateText] = None
     for text in places:
         found = find_dates(text or "")
+        if found and _DAY_RANGE.search(normalize_digits(text)):
+            return []
+        period = period or find_period(text or "")
         if found:
             seen: set[tuple] = set()
             kept: list[DateText] = []
@@ -345,7 +361,31 @@ def _caption_value(node, captions: tuple[re.Pattern, ...]) -> list[DateText]:
                 kept.append(parsed)
             if kept:
                 return kept
-    return []
+    # No day anywhere: a month or season alone still tells availability when the tour ends.
+    return [period] if period else []
+
+
+def _card_above(node) -> list[str]:
+    """The text of each ancestor that is still one small card, innermost first.
+
+    Some blocks print the value above its caption, a level up from it.
+
+    Example:
+        >>> tree = HTMLParser('<div class="card"><div><span>20 دی</span></div>'
+        ...                   '<div><p>تاریخ شروع تور</p></div></div>')
+        >>> _card_above(tree.css_first("p"))
+        ['20 دی']
+    """
+    own = _clean(node.text(deep=False))
+    out: list[str] = []
+    ancestor = node.parent.parent if node.parent is not None else None
+    while ancestor is not None and (ancestor.tag or "").lower() not in ("body", "html"):
+        text = _clean(ancestor.text(deep=True, separator=" "))
+        if len(text) > _BACK_WINDOW:
+            break
+        out.append(_clean(text.replace(own, " ")))
+        ancestor = ancestor.parent
+    return out
 
 
 def read_block_dates(html: str) -> tuple[list[DateText], Optional[DateText]]:
