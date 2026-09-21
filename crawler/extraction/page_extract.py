@@ -74,6 +74,8 @@ from crawler.extraction.tour_api import (
     api_url_for,
     enrich_from_api,
     fetch_tour_json,
+    sibling_rows,
+    sibling_ids,
 )
 from crawler.extraction.readers.countries import (
     find_city,
@@ -907,6 +909,12 @@ async def _read_everything(
         data, error = await _tour_json(api_url, client, timeout)
         if data is not None:
             page = enrich_from_api(page, data)
+            # A shell's own rows are the template of its departures, dateless; they give way to them.
+            found = await _sibling_rows(api_url, url, data, client, timeout, today) if sibling_ids(data, today) else []
+            if found:
+                page.rows = found
+                for index, row in enumerate(page.rows):
+                    row.index = index
             page.rows, page.expired_rows = split_by_availability(page.rows, today)
         else:
             page.notes.append(f"site publishes an API but it did not answer: {error}")
@@ -1015,6 +1023,17 @@ def _settle_render_question(
     plain.notes = fetched.notes
     plain.html_raw = before
     return plain
+
+
+async def _sibling_rows(
+    api_url: str, page_url: str, data: dict, client: Optional[httpx.AsyncClient],
+    timeout: float, today: Optional[date],
+) -> list:
+    """Read a shell record's departures, borrowing the caller's client when there is one."""
+    if client is not None:
+        return await sibling_rows(client, api_url, data, page_url, today)
+    async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as owned:
+        return await sibling_rows(owned, api_url, data, page_url, today)
 
 
 async def _tour_json(

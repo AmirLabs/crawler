@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Optional
 from urllib.parse import urljoin, urlparse
 
@@ -388,6 +388,67 @@ def _stamp_transport(rows: list[ExtractedRow], outbound: Optional[dict]) -> None
         row.unresolved_fields = unresolved(row.fields, ROW_FIELDS)
 
 
+def sibling_ids(data: dict, today: Optional[date] = None) -> list[str]:
+    """The departures a record points to when it states none of its own.
+
+    avisatravel reuses a tour page as a shell: no ``transportation``, and the
+    real departures under ``siblingItineraries``, each a full record of its
+    own. Measured: 6 of its 8 dateless pages, 23 departures never read.
+
+    Example:
+        >>> sibling_ids({"transportation": [], "siblingItineraries": [
+        ...     {"id": 97154, "leaveDateTime": "2026-09-29T21:40:00"},
+        ...     {"id": 90001, "leaveDateTime": "2026-08-01T10:00:00"}]},
+        ...     today=date(2026, 9, 21))
+        ['97154']
+        >>> sibling_ids({"transportation": [{"departDateTime": "2026-10-01"}],
+        ...     "siblingItineraries": [{"id": 1, "leaveDateTime": "2026-10-08"}]})
+        []
+    """
+    if data.get("transportation"):
+        return []
+    today = today or date.today()
+    found: list[str] = []
+    for sibling in data.get("siblingItineraries") or []:
+        if not isinstance(sibling, dict) or sibling.get("id") is None:
+            continue
+        leaves = str(sibling.get("leaveDateTime") or "")[:10]
+        if leaves and leaves < today.isoformat():
+            continue
+        found.append(str(sibling["id"]))
+    return found
+
+
+def offers_nothing(data: dict) -> bool:
+    """A full record with no departure of its own and none to point to.
+
+    Example:
+        >>> offers_nothing({"isFull": True, "transportation": [], "siblingItineraries": []})
+        True
+        >>> offers_nothing({"isFull": False, "transportation": [], "siblingItineraries": []})
+        False
+    """
+    return bool(data.get("isFull")) and not data.get("transportation") \
+        and not data.get("siblingItineraries")
+
+
+async def sibling_rows(
+    client: httpx.AsyncClient, api_url: str, data: dict, page_url: str = "",
+    today: Optional[date] = None,
+) -> list[ExtractedRow]:
+    """The rows of every departure a shell record points to, read like any other."""
+    base = api_url.rsplit("/", 1)[0]
+    rows: list[ExtractedRow] = []
+    for tour_id in sibling_ids(data, today):
+        sibling, _ = await fetch_tour_json(client, f"{base}/{tour_id}")
+        if sibling is None:
+            continue
+        found = _rows_from_bundles(sibling, page_url)
+        _stamp_transport(found, _legs(sibling)[0])
+        rows += found
+    return rows
+
+
 def enrich_from_api(page: ExtractedPage, data: dict) -> ExtractedPage:
     """Replace what the markup guessed with what the API states.
 
@@ -429,10 +490,11 @@ def enrich_from_api(page: ExtractedPage, data: dict) -> ExtractedPage:
             "transportation[].destination.city")
 
     page.unresolved_page_fields = unresolved(page.page_fields, PAGE_FIELDS)
-    page.rows = _rows_from_bundles(data, page.url)
+    page.rows = [] if offers_nothing(data) else _rows_from_bundles(data, page.url)
     _stamp_transport(page.rows, outbound)
     page.notes.append(
         f"offers from the site's API: {len(page.rows)} rows"
         + (" (the site marks this tour expired)" if data.get("isExpired") else "")
+        + (" (full, with no departure left)" if offers_nothing(data) else "")
     )
     return page
