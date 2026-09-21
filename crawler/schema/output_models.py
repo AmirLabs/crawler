@@ -204,6 +204,12 @@ class Hotel:
     board_type: Optional[str] = None   # "BB", "HB", "ALL" — from "خدمات:BB"
     nights: Optional[int] = None       # "7 شب" — can differ per hotel
 
+    # One picture of the building, absolute so the client can fetch it as it
+    # stands. A single image rather than a gallery: that is what was asked
+    # for, and one the source ties to this hotel beats several we matched up
+    # ourselves.
+    image_url: Optional[str] = None
+
 
 @dataclass
 class Transport:
