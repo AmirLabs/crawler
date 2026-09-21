@@ -56,6 +56,65 @@ _JSON_SCRIPT_RE = re.compile(
 )
 
 
+# What a Next.js App Router page streams its data through, one call per chunk.
+# The argument is a JSON string, and the chunks are halves of one document, so
+# they are joined before anything is read out of them. Not a rule about any one
+# site: this is the framework's own transport.
+_NEXT_CHUNK_RE = re.compile(r'self\.__next_f\.push\(\[1,\s*("(?:[^"\\]|\\.)*")\]\)')
+
+# The smallest object worth pulling out of that stream. Below this it is
+# routing and styling, not content.
+_MIN_NEXT_OBJECT = 200
+
+
+def _next_payload_objects(html: str) -> list[dict]:
+    """Every JSON object a Next.js page streams into its own markup.
+
+    The framework writes its data as ``self.__next_f.push([1, "..."])``, so it
+    reaches the browser inside a script that is code rather than data and the
+    plain ``application/json`` reader never sees it. chakavaktravel.com puts
+    its whole tour there — dates, prices, hotels and their photographs — which
+    is why that site produced nothing at all.
+
+    Chunks are joined first: the framework splits one document across calls,
+    and an object can straddle the join.
+
+    Example:
+        >>> _next_payload_objects(
+        ...     'x<script>self.__next_f.push([1,"a:{\\"tour\\":'
+        ...     '{\\"name\\":\\"' + "تور کیش" + '\\",\\"night\\":3}}"])</script>')
+        [{'name': 'تور کیش', 'night': 3}]
+    """
+    joined = ""
+    for match in _NEXT_CHUNK_RE.finditer(html):
+        try:
+            joined += json.loads(match.group(1))
+        except json.JSONDecodeError:
+            continue
+
+    found: list[dict] = []
+    for start, char in enumerate(joined):
+        if char != "{":
+            continue
+        depth = 0
+        for end in range(start, len(joined)):
+            if joined[end] == "{":
+                depth += 1
+            elif joined[end] == "}":
+                depth -= 1
+                if depth:
+                    continue
+                if end - start >= _MIN_NEXT_OBJECT:
+                    try:
+                        data = json.loads(joined[start:end + 1])
+                    except json.JSONDecodeError:
+                        break
+                    if isinstance(data, dict):
+                        found.append(data)
+                break
+    return found
+
+
 def _extract_embedded_json(html: str) -> list[dict]:
     """Pull every JSON object a page embeds in a ``<script>`` tag.
 
@@ -80,7 +139,7 @@ def _extract_embedded_json(html: str) -> list[dict]:
             continue
         if isinstance(data, dict):
             blobs.append(data)
-    return blobs
+    return blobs + _next_payload_objects(html)
 
 
 def _resolve_crawl_delay(profile: SiteProfile) -> tuple[float, Optional[str]]:

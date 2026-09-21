@@ -430,6 +430,23 @@ _LAZY_SOURCES = ("data-src", "data-lazy-src", "data-original", "data-lazy")
 _IMAGE_LEVELS = 1
 
 
+def _names_a_file(address: str) -> bool:
+    """Whether an address ends in something, rather than in a directory.
+
+    bisanseir writes ``src="/media/"`` for the 16 of its 45 hotels that have
+    no photograph, and that resolves to a folder which answers 403. An address
+    naming no file is the site saying it has no picture.
+
+    Example:
+        >>> _names_a_file("/media/hotel/2026/07/25/grand.jpg")
+        True
+        >>> _names_a_file("/media/")
+        False
+    """
+    path = address.split("?")[0].split("#")[0]
+    return bool(path) and not path.endswith("/")
+
+
 def _address(image: Node) -> Optional[str]:
     """Where an img really points, past any placeholder it was served with.
 
@@ -438,11 +455,13 @@ def _address(image: Node) -> Optional[str]:
         ...                   ' data-src="/photos/oz-firat.jpg">')
         >>> _address(tree.css_first("img"))
         '/photos/oz-firat.jpg'
+        >>> _address(HTMLParser('<img src="/media/">').css_first("img")) is None
+        True
     """
     attributes = image.attributes or {}
     for key in ("src", *_LAZY_SOURCES):
         value = (attributes.get(key) or "").strip()
-        if value and not value.startswith("data:"):
+        if value and not value.startswith("data:") and _names_a_file(value):
             return value
     return None
 
@@ -456,19 +475,31 @@ def image_in_block(block: Node) -> Optional[str]:
     as a right answer. Scoped this way it is the site itself saying which
     hotel the picture belongs to.
 
+    Above the block, a picture is taken only where there is exactly one — that
+    is what makes it this hotel's. bisanseir gives the 16 of its 45 hotels
+    that have no photograph an empty ``src``, and its hotels are siblings, so
+    reaching up without this returned the neighbour's building for all of
+    them: thirteen hotels shown as The Grand Day Night.
+
     Example:
         >>> tree = HTMLParser('<div class="hotel"><span>هتل آمون</span>'
         ...                   '<img src="/photos/amon.jpg"></div>')
         >>> image_in_block(tree.css_first("div.hotel"))
         '/photos/amon.jpg'
+        >>> beside = HTMLParser('<div class="row"><div class="hotel">a</div>'
+        ...                     '<img src="/photos/one.jpg"></div>')
+        >>> image_in_block(beside.css_first("div.hotel"))
+        '/photos/one.jpg'
+        >>> crowd = HTMLParser('<div class="row"><div class="hotel">a</div>'
+        ...                    '<img src="/a.jpg"><img src="/b.jpg"></div>')
+        >>> image_in_block(crowd.css_first("div.hotel"))
         >>> image_in_block(HTMLParser('<div>no picture</div>').css_first("div"))
     """
     node, level = block, 0
     while node is not None and level <= _IMAGE_LEVELS:
-        for image in node.css("img"):
-            found = _address(image)
-            if found:
-                return found
+        found = [a for a in (_address(i) for i in node.css("img")) if a]
+        if found and (level == 0 or len(found) == 1):
+            return found[0]
         node, level = node.parent, level + 1
     return None
 
