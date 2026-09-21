@@ -336,6 +336,7 @@ def _hotels_named(
     star_rating: Optional[Any],
     board_type: Optional[Any],
     nights: Optional[int],
+    image_url: Optional[Any] = None,
 ) -> list[Hotel]:
     """One hotel per hotel, out of the one string the markup path joins them into.
 
@@ -345,10 +346,10 @@ def _hotels_named(
     name loses every one of them: lachinseir's Asia tour arrived as a single
     hotel called "IMPIANA HOTEL + MERCURE MAKKASAN + AYUNG RESORT + MAMAKA".
 
-    The grade, the board and the nights are not split with the name. They were
-    read once for the stay and there is nothing in the markup saying which
-    hotel each belongs to, so they stay on the first and the rest carry only
-    what the page actually named.
+    The grade, the board, the nights and the picture are not split with the
+    name. They were read once for the stay and there is nothing in the markup
+    saying which hotel each belongs to, so they stay on the first and the rest
+    carry only what the page actually named.
 
     Example:
         >>> [h.name for h in _hotels_named("A + B", None, 4, "BB", 6)]
@@ -357,14 +358,19 @@ def _hotels_named(
         [(4, 6), (None, None)]
         >>> [h.name for h in _hotels_named("Kemer Star Hotel", None, None, None, 3)]
         ['Kemer Star Hotel']
+        >>> _hotels_named("A + B", None, None, None, 3,
+        ...               image_url="https://x.com/a.jpg")[1].image_url is None
+        True
     """
     parts = [part.strip() for part in str(name).split(" + ")] if name else []
     parts = [part for part in parts if part]
     if len(parts) < 2:
         return [Hotel(name=name, city=city, star_rating=star_rating,
-                      board_type=board_type, nights=nights)]
+                      board_type=board_type, nights=nights,
+                      image_url=image_url)]
     return [Hotel(name=parts[0], city=city, star_rating=star_rating,
-                  board_type=board_type, nights=nights)] + [
+                  board_type=board_type, nights=nights,
+                  image_url=image_url)] + [
         Hotel(name=part) for part in parts[1:]
     ]
 
@@ -433,6 +439,7 @@ def _build_offer(
             star_rating=_value(first, "hotel_star_rating"),
             board_type=_value(first, "board_type"),
             nights=nights,
+            image_url=_value(first, "hotel_image"),
         )
 
     transport_name = _value(first, "transport_name")
