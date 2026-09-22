@@ -80,6 +80,11 @@ def _is_sibling(page_url: str, candidate: str) -> bool:
     and that segment must be all digits in both. A slug that merely contains a
     number — nahalgasht's ``59262-istanbul-divan-hotel`` — is a different tour.
 
+    Something after the id must be shared as well. Where the id ends the path,
+    as on vanrosh's ``/tours/5616628812/``, it is the whole name of the tour,
+    and every other tour on the site differs from it in one digit segment: 58
+    tours took in the rows of the tours they recommend (#40).
+
     Example:
         >>> base = "https://www.alefbatour.com/tour/d/173167/malaysia"
         >>> _is_sibling(base, "https://www.alefbatour.com/tour/d/173164/malaysia")
@@ -88,6 +93,9 @@ def _is_sibling(page_url: str, candidate: str) -> bool:
         False
         >>> _is_sibling("https://nahalgasht.com/tour/59262-istanbul-divan-hotel/",
         ...             "https://nahalgasht.com/tour/59263-istanbul-park-hotel/")
+        False
+        >>> _is_sibling("https://vanrosh.com/tours/2606251012223/",
+        ...             "https://vanrosh.com/tours/5616628812/")
         False
     """
     if urlparse(page_url).netloc != urlparse(candidate).netloc:
@@ -99,6 +107,8 @@ def _is_sibling(page_url: str, candidate: str) -> bool:
     if len(differ) != 1:
         return False
     at = differ[0]
+    if at == len(here) - 1:
+        return False
     return bool(_ID_SEGMENT.match(here[at]) and _ID_SEGMENT.match(there[at]))
 
 
