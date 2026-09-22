@@ -12,3 +12,7 @@ langchain-openai>=0.2,<0.4
 # Serving the published output over the two routes the client calls.
 fastapi>=0.115
 uvicorn[standard]>=0.30
+
+# The crawl's memory between nights: tour codes, what each page looked like,
+# and the live catalogue the API serves. SQLite itself ships with Python.
+sqlalchemy>=2.0,<2.1
