@@ -396,11 +396,11 @@ def find_dates(text: str) -> list[DateText]:
 _MONTHS_AHEAD = 6
 
 # A season is read as its last month: it is over once that month is.
-_SEASONS = {"بهار": 3, "تابستان": 6, "پاییز": 9, "پائیز": 9, "زمستان": 12}
+SEASONS = {"بهار": 3, "تابستان": 6, "پاییز": 9, "پائیز": 9, "زمستان": 12}
 
 # A whole caption value naming a month or a season and nothing else: "ویژه دی", "تابستان 1405".
 _PERIOD_RE = re.compile(
-    r"^(?:ویژه\s*)?(?P<name>" + "|".join([*_SEASONS, _MONTH_ALTERNATION]) + r")"
+    r"^(?:ویژه\s*)?(?P<name>" + "|".join([*SEASONS, _MONTH_ALTERNATION]) + r")"
     r"(?:\s*ماه)?(?:\s*(?P<year>\d{4}))?$"
 )
 
@@ -428,7 +428,7 @@ def find_period(text: str) -> Optional[DateText]:
     year = match.group("year")
     return DateText(
         raw=value,
-        month=_SEASONS.get(name) or JALALI_MONTHS[name],
+        month=SEASONS.get(name) or JALALI_MONTHS[name],
         day=None,
         year=int(year) if year else None,
         time=None,

@@ -31,7 +31,9 @@ from urllib.parse import unquote, urlparse
 
 from selectolax.parser import HTMLParser
 
+from crawler.extraction.readers.dates import SEASONS
 from crawler.extraction.readers.places import AIRLINES, is_a_departure_city
+from crawler.extraction.readers.prices import normalize_digits
 
 
 class Country(NamedTuple):
@@ -183,6 +185,13 @@ _A_COUNTRY = re.compile(
 _SLUG_NOISE = re.compile(r"^(?:tour-|tours-)|(?:-tour|-tours|-combo|-combined)$")
 
 # What a page wraps a country name in when it prints it in a menu or a crumb.
+# When a tour runs, which some sites file below the city: "تور استانبول تابستان"
+# at /tour/istanbul/summer. Not a place, in either language (#41).
+_WHEN_WORDS = re.compile(
+    r"(?:ویژه[\s‌]*)?(?:" + "|".join([*SEASONS, "نوروز"]) + r")|\b1[34]\d{2}\b"
+)
+_WHEN_SLUGS = frozenset({"spring", "summer", "autumn", "fall", "winter", "nowruz", "norooz"})
+
 _NAME_NOISE = re.compile(r"^(?:تور(?:های)?|سفر)[\s‌]*|[\s‌]*تور$")
 
 
@@ -502,15 +511,42 @@ def country_beside(tree: HTMLParser, names: str) -> Optional[Country]:
     return None
 
 
+def _without_when(name: str) -> str:
+    """A crumb's place with the season or year it is filed under taken off.
+
+    Example:
+        >>> _without_when("استانبول تابستان"), _without_when("بانکوک تابستان ۱۴۰۵")
+        ('استانبول', 'بانکوک')
+        >>> _without_when("تابستان 1405")
+        ''
+    """
+    return " ".join(_WHEN_WORDS.sub(" ", normalize_digits(name or "")).split())
+
+
 def _latin_of(link: str) -> str:
     """The latin name inside a category link, or empty where the path is Persian.
+
+    A last segment naming only a season is skipped for the one before it.
 
     Example:
         >>> _latin_of("https://x.com/tours/turkey/antalya/"), _latin_of("/t/تور-مسقط")
         ('antalya', '')
+        >>> _latin_of("https://avisatravel.com/tour/istanbul/summer"), _latin_of("/tours/spring-summer")
+        ('istanbul', '')
+        >>> _latin_of("https://www.alefbatour.com/tour/russia-combo/summer")
+        ''
     """
-    last = urlparse(link or "").path.rstrip("/").split("/")[-1]
-    cleaned = _SLUG_NOISE.sub("", unquote(last).lower())
+    segments = [s for s in urlparse(link or "").path.split("/") if s]
+    kept = len(segments)
+    while segments and set(unquote(segments[-1]).lower().split("-")) <= _WHEN_SLUGS:
+        segments.pop()
+    # Only the season left under a section like /tours/: no city in this link.
+    if not segments or (len(segments) < kept and len(segments) < 2):
+        return ""
+    cleaned = _SLUG_NOISE.sub("", unquote(segments[-1]).lower())
+    # "/tour/russia-combo/summer" left "russia": a country is not a city's name.
+    if cleaned in COUNTRIES.values():
+        return ""
     return cleaned if cleaned.isascii() and cleaned.replace("-", "").isalnum() else ""
 
 
@@ -549,7 +585,7 @@ def find_city(
     here = urlparse(url).path.rstrip("/")
     under_a_country = False
     for text, link in read_crumbs(embedded_json, tree):
-        name = clean_country_text(text)
+        name = _without_when(clean_country_text(text))
         if country_named(name):
             under_a_country = True
             continue
