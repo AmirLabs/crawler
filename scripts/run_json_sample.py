@@ -24,9 +24,8 @@ Run::
     .venv/bin/python scripts/run_json_sample.py
     .venv/bin/python scripts/run_json_sample.py --domain alefbatour --each 2
 
-Files land in ``logs/json/<site>.json``. The id store in ``data/ids.json`` is
-carried across runs, so a tour keeps its ``tour_code`` from one night to the
-next.
+Files land in ``logs/json/<site>.json``. Codes come from ``data/crawler.db``,
+the same ones the nightly run uses, so a tour keeps its ``tour_code``.
 """
 
 from __future__ import annotations
@@ -47,7 +46,7 @@ from crawler.extraction.page_extract import extract_page
 from crawler.filtering.url_filter import discover_tour_urls
 from crawler.profiler.profiler import profile_site
 from crawler.schema.converter import build_tour
-from crawler.schema.identifiers import IdStore
+from crawler.storage.database import Database
 from crawler.schema.safarbank import tour_to_objects
 from crawler.utils.domains import load_domains
 
@@ -106,7 +105,7 @@ def kind_of(objects: list[dict]) -> str:
 
 
 async def objects_for(
-    domain: str, each: int, ids: IdStore
+    domain: str, each: int, ids: Database
 ) -> tuple[list[dict], list[dict]]:
     """Keep opening tours until both kinds are found, or the budget runs out.
 
@@ -194,7 +193,7 @@ async def main(domain: Optional[str], each: int) -> None:
             return
 
     OUT.mkdir(parents=True, exist_ok=True)
-    ids = IdStore()
+    ids = Database()
     for target in domains:
         objects, kinds = await objects_for(target, each, ids)
         path = write_site(site_name(target), objects, kinds)

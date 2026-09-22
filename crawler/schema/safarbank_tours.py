@@ -349,8 +349,8 @@ def offer_to_listing(tour: Tour, offer: TourOffer, ids: IdStore) -> dict:
             },
         },
         "info_tour_rout": [
-            _leg(tour, offer, True, 1, row, ids.row_id()),
-            _leg(tour, offer, False, 2, row, ids.row_id()),
+            _leg(tour, offer, True, 1, row, ids.row_id(f"leg|{row}|1")),
+            _leg(tour, offer, False, 2, row, ids.row_id(f"leg|{row}|2")),
         ],
         "agency_info": agency_info(
             tour.tour_url, tour.agency.name, tour.agency.logo_url),

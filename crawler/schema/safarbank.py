@@ -249,6 +249,7 @@ def offer_to_object(
     end = to_jalali_parts(offer.ret.iso)
     packed = packed_date(start)
 
+    fk = ids.fk_tour_id(tour_code, packed)
     out: dict = {
         "tour_code": tour_code,
         "start_date": packed,
@@ -259,8 +260,8 @@ def offer_to_object(
         "adult_price_one_day_tour_r": "0",
         "child_price_one_day_tour_r": "0",
         "infant_price_one_day_tour_r": "0",
-        "id": ids.row_id(),
-        "fk_tour_id": ids.fk_tour_id(tour_code, packed),
+        "id": ids.row_id(f"package|{fk}|{package}"),
+        "fk_tour_id": fk,
     }
 
     by_prefix = {prefix: room for prefix, room, _, _, _, _ in ROOMS}

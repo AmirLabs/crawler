@@ -1,4 +1,4 @@
-"""The two routes the client calls, over the files a finished run published.
+"""The two routes the client calls, over the database the nightly run keeps.
 
 Their developer asked for the split and our two structures already were it: a
 *tour* is one departure with a starting price, a *package* is one hotel and
@@ -41,8 +41,10 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from crawler.api.queries import only_changed, packages_for
-from crawler.api.store import CHANGES_FILE, PACKAGES_FILE, TOURS_FILE, read
+from crawler.storage.database import DEFAULT_DATABASE_PATH, Database
+
+# Where the nightly run's database is; the examples point it at a scratch file.
+DATABASE_PATH = DEFAULT_DATABASE_PATH
 
 USER_VARIABLE = "CRAWLER_API_USER"
 PASSWORD_VARIABLE = "CRAWLER_API_PASSWORD"
@@ -105,7 +107,7 @@ def signed_in(
 
 @app.get("/api/v1/tours")
 def tours(_: str = Depends(signed_in), changed: bool = False) -> dict:
-    """Every tour the last finished run published, one per departure.
+    """Every live tour, one per departure.
 
     ``changed=true`` narrows it to what that run found new or different. The
     full list stays available so a night that was missed can be caught up.
@@ -118,8 +120,11 @@ def tours(_: str = Depends(signed_in), changed: bool = False) -> dict:
         >>> answer["status"], answer["code"], answer["message"]
         ('success', 200, 'Data Fetched Successfully')
     """
-    return envelope(only_changed(read(TOURS_FILE), read(CHANGES_FILE)) if changed
-                    else read(TOURS_FILE))
+    db = Database(DATABASE_PATH)
+    try:
+        return envelope((db.changes() if changed else db.catalogue())[1])
+    finally:
+        db.close()
 
 
 @app.get("/api/v1/packages")
@@ -144,10 +149,11 @@ def packages(
         >>> answer.status_code, answer.json()["data"]
         (200, [])
     """
-    found = packages_for(read(PACKAGES_FILE), tour_code, start_date, end_date)
-    if changed:
-        found = only_changed(found, read(CHANGES_FILE))
-    return envelope(found)
+    db = Database(DATABASE_PATH)
+    try:
+        return envelope(db.packages_for(tour_code, start_date, end_date, changed))
+    finally:
+        db.close()
 
 
 @app.exception_handler(HTTPException)
@@ -199,8 +205,13 @@ def _unhandled(request: Request, error: Exception) -> JSONResponse:
 
 def _a_test_client():
     """A client of this app with credentials in place, for the examples above."""
+    import tempfile
+    from pathlib import Path
+
     from fastapi.testclient import TestClient
 
+    global DATABASE_PATH
+    DATABASE_PATH = Path(tempfile.mkdtemp()) / "crawler.db"
     os.environ[USER_VARIABLE] = "them"
     os.environ[PASSWORD_VARIABLE] = "s3cret"
     return TestClient(app)

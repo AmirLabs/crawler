@@ -11,13 +11,11 @@ what production runs.
 
 Expect it to take hours the first night. From the second on, a page that came
 back exactly as it was is fetched and left unread, which is most of them — see
-:mod:`crawler.automation.memory`.
+:mod:`crawler.storage.database`.
 
 What it leaves behind::
 
-    data/published/     what the API serves
-    data/ids.json       the tour numbers, which cannot be rebuilt if lost
-    data/seen.json      what last night saw
+    data/crawler.db     the tour codes and the catalogue the API serves
     data/runs/          everything this printed, kept a fortnight
     logs/client/        the same two files plus a summary, for reading by eye
 
