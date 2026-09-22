@@ -17,17 +17,16 @@ of every hotel on every date, which is what a person books. The second is a
 listing — one line per departure, carrying the route, the carrier and the
 cheapest price, which is what a search page shows before anyone clicks.
 
-**A tour keeps one ``tour_code``, in both files and across nights.** One
-:class:`IdStore` serves the whole run and is read from and written back to
-``data/ids.json``, so a listing in the second file can be looked up in the
-first, and a tour we sent last night is the same tour tonight. The client
-checks a record against ``api_id``, which is built on that code: a code that
-moved overnight would point their database at a different tour.
+**A tour keeps one ``tour_code``, in both files and across nights.** The
+codes live in ``data/crawler.db`` (:mod:`crawler.storage.database`), so a
+listing in the second file can be looked up in the first, and a tour we sent
+last night is the same tour tonight. The same database holds the catalogue the
+API serves: a page left unread because it had not changed keeps last night's
+records there, which is what issue #29 was about.
 
-That file cannot be rebuilt if it is lost — nothing can work out which tour
-held ``31540001`` yesterday — so it is written through a temporary name and a
-rename, with dated copies kept beside it. Wherever this ends up running, it
-needs a backup that is not on the same disk.
+A run of every page (``--pages 0``) also retires tours whose page has been
+missing three nights; a run of a few pages cannot tell missing from unvisited,
+so it retires only what has departed.
 
 ``logs/`` is emptied first. What was there came from earlier runs of a
 different script and reading a new run against it would compare two different
@@ -59,8 +58,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from crawler.api.store import CHANGES_FILE, PACKAGES_FILE, TOURS_FILE, publish
-from crawler.automation.memory import UNCHANGED_NOTE, RunMemory
+from crawler.automation.memory import UNCHANGED_NOTE
 from crawler.automation.scheduler import AlreadyRunning, only_one_run, run_log
 from crawler.config import PROJECT_ROOT
 from crawler.extraction.page_extract import extract_page
@@ -68,9 +66,9 @@ from crawler.filtering.tour_groups import group_by_tour
 from crawler.filtering.url_filter import discover_tour_urls
 from crawler.profiler.profiler import profile_site
 from crawler.schema.converter import build_tour
-from crawler.schema.identifiers import IdStore
 from crawler.schema.safarbank import tour_to_objects
 from crawler.schema.safarbank_tours import listing_document, tour_to_listings
+from crawler.storage.database import MISSED_NIGHTS, Database
 from crawler.utils.domains import load_domains
 
 LOGS = PROJECT_ROOT / "logs"
@@ -110,9 +108,7 @@ def _stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
-async def crawl_site(
-    domain: str, pages: int, ids: IdStore, memory: RunMemory
-) -> dict:
+async def crawl_site(domain: str, pages: int, db: Database) -> dict:
     """Open tour pages until ``pages`` of them sold something, and convert each.
 
     Only a page that actually sells is kept. A URL that answers 404, or whose
@@ -149,28 +145,36 @@ async def crawl_site(
         print(f"  [{len(result['kept']) + 1}/{pages}] {url[:84]}", flush=True)
         try:
             page = await extract_page(url, profile, timeout=40,
-                                      unchanged=memory.unchanged)
+                                      unchanged=db.worth_skipping)
         except Exception as error:  # a dead page must not end the run
             result["skipped"].append({"url": url, "why": f"{type(error).__name__}"})
             print(f"        skipped ({type(error).__name__})", flush=True)
             continue
 
         if UNCHANGED_NOTE in page.notes:
+            db.remember_page(url, page.content_hash)
             result["unchanged"] += 1
             print(f"        unchanged, not read ({time.monotonic() - started:.0f}s)",
                   flush=True)
             await asyncio.sleep(POLITE_PAUSE)
             continue
 
-        memory.remember_page(url, page.content_hash)
+        # A page that did not answer is not seen: it keeps its records until missing three nights.
+        if page.status_code and page.status_code >= 400:
+            result["skipped"].append({"url": url, "why": f"answered {page.status_code}"})
+            print(f"        skipped (answered {page.status_code})", flush=True)
+            await asyncio.sleep(POLITE_PAUSE)
+            continue
+
+        db.remember_page(url, page.content_hash)
         tour = build_tour(page)
-        first = tour_to_objects(tour, ids, name)
-        second = tour_to_listings(tour, ids)
+        first = tour_to_objects(tour, db, name)
+        second = tour_to_listings(tour, db)
+        db.store_tour(db.tour_code(url), first, second)
         took = time.monotonic() - started
 
         if not first and not second:
-            why = (f"answered {page.status_code}" if page.status_code
-                   and page.status_code >= 400 else "no offer could be read")
+            why = "no offer could be read"
             result["skipped"].append({"url": url, "why": why})
             print(f"        skipped ({why}) {took:.0f}s", flush=True)
             await asyncio.sleep(POLITE_PAUSE)
@@ -196,19 +200,15 @@ async def crawl_site(
     return result
 
 
-def write_everything(results: list[dict], memory: RunMemory) -> None:
-    """Both files, with every site inside them, plus a note on what was crawled.
+def write_everything(results: list[dict], db: Database) -> None:
+    """The whole catalogue as the API serves it, plus a note on what was crawled.
 
-    One file per structure and not one per site, because that is what the
-    client is sent: their catalogue is the ten agencies together, and a reader
-    who has to open ten files to see it cannot tell whether a tour is missing
-    or in the file they have not opened yet.
-
+    Written for reading by eye: the API reads the database, not these files.
     The sites are told apart inside the data, not by the filename —
     ``agency_name`` in both structures, and ``website_url`` in the first.
     """
-    first = [obj for result in results for obj in result["first"]]
-    second = [obj for result in results for obj in result["second"]]
+    first, second = db.catalogue()
+    moved = sum(len(part) for part in db.changes(db.run))
 
     (OUT / "first_structure.json").write_text(
         json.dumps(first, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -217,17 +217,6 @@ def write_everything(results: list[dict], memory: RunMemory) -> None:
         json.dumps(listing_document(second), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-
-    # What the client does not already hold. The two files stay complete, so a
-    # night they missed can still be caught up from them.
-    changed = memory.to_send(first) + memory.to_send(second)
-
-    # Where the API reads them. logs/ is emptied at the start of every run, so
-    # a call at midnight would otherwise be served half a catalogue.
-    publish(PACKAGES_FILE, first)
-    publish(TOURS_FILE, second)
-    memory.remember_sent(changed)
-    publish(CHANGES_FILE, memory.tonight)
 
     codes_first = {obj.get("tour_code") for obj in first}
     codes_second = {obj.get("tour_code") for obj in second}
@@ -240,7 +229,7 @@ def write_everything(results: list[dict], memory: RunMemory) -> None:
         f"   second_structure.json   {len(second)} objects,"
         f" {len(codes_second)} tour codes",
         f"   codes in both           {len(codes_first & codes_second)}",
-        f"   new or changed tonight  {len(memory.tonight)} records",
+        f"   new or changed tonight  {moved} records",
         "",
         f"{'site':18}{'tours':>7}{'skipped':>9}{'unread':>8}{'first':>8}{'second':>8}",
         "=" * 78,
@@ -274,10 +263,9 @@ async def main(domain: Optional[str], pages: int) -> int:
     wanted = f"{pages} pages each" if pages else "every page"
     print(f"cleared logs/, crawling {len(domains)} site(s), {wanted}")
 
-    # One store for the whole run, read from disk and written back to it.
-    ids = IdStore()
-    # What last night saw, so tonight reads and sends only what moved.
-    memory = RunMemory()
+    # The codes, what last night saw, and the catalogue the API serves.
+    db = Database()
+    db.start_run()
 
     started = time.monotonic()
     failed = 0
@@ -285,22 +273,24 @@ async def main(domain: Optional[str], pages: int) -> int:
     for index, site in enumerate(domains, start=1):
         print(f"\n[{index}/{len(domains)}] {site}", flush=True)
         try:
-            result = await crawl_site(site, pages, ids, memory)
+            result = await crawl_site(site, pages, db)
         except Exception as error:  # one site must not take the others with it
             failed += 1
             print(f"  FAILED: {type(error).__name__}: {error}", flush=True)
             continue
         results.append(result)
-        # Written after every site, so a run stopped halfway still leaves both
-        # files holding everything crawled up to that point.
-        write_everything(results, memory)
-        # Saved after every site for the same reason the files are: a run that
-        # stops halfway must not mint these numbers again tomorrow.
-        ids.save()
-        memory.save()
+        # Saved after every site: a run stopped halfway keeps what it crawled and the codes it minted.
+        db.save()
+        write_everything(results, db)
         print(f"  -> {len(result['first'])} first, {len(result['second'])} second"
               f"  ({sum(len(r['first']) for r in results)} in the file)", flush=True)
 
+    gone = db.retire(domains if not pages else [])
+    db.finish_run()
+    write_everything(results, db)
+    db.close()
+    print(f"\nretired {gone['departed']} departed records, {gone['missing']} tours missing"
+          f" {MISSED_NIGHTS} nights", flush=True)
     print(f"\ndone in {time.monotonic() - started:.0f}s, files in {OUT}")
     if failed:
         print(f"{failed} of {len(domains)} sites failed", flush=True)

@@ -98,10 +98,12 @@ class IdStore:
     def __init__(self, path: Optional[Path] = DEFAULT_STORE_PATH) -> None:
         self.path = path
         self._data: dict = {"tour_code": {}, "hotel_id": {}, "fk_tour_id": {},
+                            "row_id": {},
                             "next": {"tour": 1, "hotel": 1, "fk": 1, "row": 1}}
         if path is not None and path.exists():
             self._data.update(json.loads(path.read_text(encoding="utf-8")))
             self._data.setdefault("fk_tour_id", {})
+            self._data.setdefault("row_id", {})
             self._data["next"].setdefault("fk", 1)
 
     def _take(self, counter: str) -> int:
@@ -163,15 +165,22 @@ class IdStore:
             self._data["hotel_id"][key] = known
         return known
 
-    def row_id(self) -> str:
-        """The next running number for a row of output.
+    def row_id(self, key: str) -> str:
+        """The id of one row of output, kept for the same row on every night.
+
+        A number that moved each night changed the record's hash, so an
+        unchanged tour was sent under ``changed=true`` again.
 
         Example:
             >>> store = IdStore(path=None)
-            >>> store.row_id(), store.row_id()
-            ('1', '2')
+            >>> store.row_id("leg|1|1"), store.row_id("leg|1|2"), store.row_id("leg|1|1")
+            ('1', '2', '1')
         """
-        return str(self._take("row"))
+        known = self._data["row_id"].get(key)
+        if known is None:
+            known = str(self._take("row"))
+            self._data["row_id"][key] = known
+        return known
 
     def save(self) -> None:
         """Write the store, keeping the old copy readable throughout.
