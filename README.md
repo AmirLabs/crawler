@@ -34,7 +34,8 @@ ratio is why the two are fetched separately.
                 source text before they are kept
 6. automation/  the nightly run: one at a time, logged, and a memory of what
                 last night saw
-7. api/         the two routes, over what the last finished run published
+7. api/         the two routes, over the database the nightly run keeps
+   storage/     the SQLite database the crawl keeps between nights
 ```
 
 ## Requirements
@@ -144,20 +145,28 @@ that failed exits non-zero.
 ### What lives on disk
 
 ```text
-data/ids.json        the number each tour is known by. Cannot be rebuilt.
-data/seen.json       what last night saw. Losing it costs one slow night.
+data/crawler.db      tour codes, pages seen, and the live catalogue the API serves.
 data/agencies.json   the ten agencies' contact details, written by hand.
-data/published/      what the API serves. Replaced atomically at the end of a run.
 data/runs/           everything a run printed, kept a fortnight.
 logs/                emptied at the start of every run.
 ```
 
-**`data/ids.json` needs a daily backup that is not on the same disk.** The
-client keys their records on `api_id`, which is built on the number in this
-file. Nothing can work out which tour held `31540001` yesterday, so losing it
-gives every tour a new number and fills their database with duplicates of what
-it already has. The 14 dated copies the crawler keeps sit beside it, on the
-same disk, and go with it.
+**`data/crawler.db` needs a daily backup that is not on the same disk.** The
+client keys their records on `api_id`, which is built on the tour codes in it.
+Nothing can work out which tour held `31540001` yesterday, so losing it gives
+every tour a new number and fills their database with duplicates of what it
+already has. Copy it with `sqlite3 data/crawler.db ".backup <file>"`, which is
+safe while the API is reading it.
+
+The codes in it are never deleted — a site that revives a dead page must get
+its old code back. A tour is deleted once its departure has passed, or once its
+page has been missing three nights running.
+
+Moving over from the JSON files, once, before the first run on the database:
+
+```bash
+.venv/bin/python -c "from pathlib import Path; from crawler.storage.database import Database; print(Database().import_numbers(Path('data/ids.json')), 'codes')"
+```
 
 `data/` must survive a restart. On a plain server this is free; in a container
 it needs a mounted volume, or every id is lost on the first redeploy.
