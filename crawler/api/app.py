@@ -189,6 +189,21 @@ def documentation(_: str = Depends(signed_in)):
     return get_swagger_ui_html(openapi_url="/openapi.json", title="Tour feed")
 
 
+def _wire_report() -> None:
+    """Hang the report pages off the same app, behind the same password.
+
+    They are kept out of the schema: that document describes the feed their
+    developer imports, and pages to look at are not part of it.
+    """
+    from crawler.api.report import router
+
+    app.include_router(router, dependencies=[Depends(signed_in)],
+                       include_in_schema=False)
+
+
+_wire_report()
+
+
 @app.exception_handler(RequestValidationError)
 def _bad_request(request: Request, error: RequestValidationError) -> JSONResponse:
     """A missing or malformed parameter is the caller's mistake, not a crash."""
