@@ -107,6 +107,21 @@ absent credentials, and `500` when the server itself failed.
 
 `GET /docs` is the API's own documentation page, behind the same password.
 
+### Reading the catalogue by eye
+
+The same server answers three pages, behind the same password, for checking a
+site's output without reading JSON:
+
+```
+GET /report                       the sites, with how much each holds
+GET /report/nahalgasht.com        that site's tours, one row per departure
+GET /report/nahalgasht.com/<api_id>   one tour, with every package under it
+```
+
+They read the records the API serves, so what is on the page is what was sent.
+Nothing on them is marked right or wrong: a field the site did not state is
+shown empty, and the judgement stays with the reader.
+
 ## Deployment
 
 ### Environment
