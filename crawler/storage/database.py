@@ -17,7 +17,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
-from sqlalchemy import create_engine, delete, event, exists, select, update
+from sqlalchemy import create_engine, delete, event, exists, func, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
@@ -397,6 +397,76 @@ class Database:
         if until:
             query = query.where(Package.start_date <= until)
         return [json.loads(r) for r in self.session.scalars(query.order_by(Package.start_date))]
+
+    # --- what the report reads -----------------------------------------
+
+    def agencies(self) -> list[dict]:
+        """One row per site in the catalogue: its name, and how much it holds.
+
+        The site is read out of the record rather than kept in a column of its
+        own, because the record is what the client is served and the two can
+        then never disagree.
+
+        Example:
+            >>> db = Database(path=None); _ = db.start_run()
+            >>> tour = {"api_id": "a", "agency_name": "نهال گشت",
+            ...         "source": {"website": "nahalgasht.com"}}
+            >>> _ = db.store_tour("1", [{"tour_code": "1", "number_package": "1"}], [tour])
+            >>> db.agencies()
+            [{'website': 'nahalgasht.com', 'name': 'نهال گشت', 'tours': 1, 'packages': 1}]
+        """
+        website = func.json_extract(Tour.record, "$.source.website")
+        name = func.json_extract(Tour.record, "$.agency_name")
+        sites = self.session.execute(
+            select(website, func.min(name), func.count()).group_by(website)
+        ).all()
+        rows = self.session.execute(
+            select(Tour.tour_code, func.min(website)).group_by(Tour.tour_code)
+        ).all()
+        of_code = {code: site for code, site in rows}
+        counted: dict[str, int] = {}
+        for code, number in self.session.execute(
+            select(Package.tour_code, func.count()).group_by(Package.tour_code)
+        ).all():
+            counted[of_code.get(code, "")] = counted.get(of_code.get(code, ""), 0) + number
+        return [
+            {"website": site or "", "name": title or "", "tours": number,
+             "packages": counted.get(site or "", 0)}
+            for site, title, number in sorted(sites, key=lambda row: -row[2])
+        ]
+
+    def tours_of(self, website: str) -> list[dict]:
+        """Every live tour of one site, newest departure last.
+
+        Example:
+            >>> db = Database(path=None); _ = db.start_run()
+            >>> _ = db.store_tour("1", [], [{"api_id": "a", "start_date": "1405-07-02",
+            ...     "source": {"website": "x.com"}}])
+            >>> [t["start_date"] for t in db.tours_of("x.com")]
+            ['1405-07-02']
+            >>> db.tours_of("other.com")
+            []
+        """
+        site = func.json_extract(Tour.record, "$.source.website")
+        return [
+            json.loads(record) for record in self.session.scalars(
+                select(Tour.record).where(site == website).order_by(Tour.start_date)
+            )
+        ]
+
+    def tour_named(self, api_id: str) -> Optional[dict]:
+        """One tour by the id the report links to, or ``None`` when it has gone.
+
+        Example:
+            >>> db = Database(path=None); _ = db.start_run()
+            >>> _ = db.store_tour("1", [], [{"api_id": "a-1", "tour_name": "تور کیش"}])
+            >>> db.tour_named("a-1")["tour_name"]
+            'تور کیش'
+            >>> db.tour_named("gone") is None
+            True
+        """
+        found = self.session.get(Tour, api_id)
+        return json.loads(found.record) if found else None
 
     # --- moving over from the JSON files -------------------------------
 
