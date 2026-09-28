@@ -49,6 +49,9 @@ DATABASE_PATH = DEFAULT_DATABASE_PATH
 USER_VARIABLE = "CRAWLER_API_USER"
 PASSWORD_VARIABLE = "CRAWLER_API_PASSWORD"
 
+# Which sites the feed carries. Unset means all of them.
+SITES_VARIABLE = "CRAWLER_API_SITES"
+
 # Below this a response is smaller than the cost of compressing it.
 _GZIP_FROM = 1024
 
@@ -77,6 +80,27 @@ def envelope(data: list[dict], code: int = 200, message: str = "") -> dict:
         "message": message or ("Data Fetched Successfully" if ok else "Error"),
         "data": data,
     }
+
+
+def wanted_sites() -> Optional[list[str]]:
+    """The websites the feed is allowed to carry, or ``None`` for every one.
+
+    The sites are finished one at a time, so the client is given the ones that
+    are ready instead of waiting for all ten. Set
+    ``CRAWLER_API_SITES=bisanseir.com,vanrosh.com`` to publish those two;
+    leaving it out publishes everything, which is what it did before.
+
+    Example:
+        >>> os.environ[SITES_VARIABLE] = " bisanseir.com , vanrosh.com "
+        >>> wanted_sites()
+        ['bisanseir.com', 'vanrosh.com']
+        >>> del os.environ[SITES_VARIABLE]
+        >>> wanted_sites() is None
+        True
+    """
+    written = os.environ.get(SITES_VARIABLE, "")
+    sites = [part.strip() for part in written.split(",") if part.strip()]
+    return sites or None
 
 
 def _matches(given: Optional[str], wanted: str) -> bool:
@@ -122,7 +146,10 @@ def tours(_: str = Depends(signed_in), changed: bool = False) -> dict:
     """
     db = Database(DATABASE_PATH)
     try:
-        return envelope((db.changes() if changed else db.catalogue())[1])
+        sites = wanted_sites()
+        return envelope(
+            (db.changes(sites=sites) if changed else db.catalogue(sites))[1]
+        )
     finally:
         db.close()
 
@@ -151,7 +178,8 @@ def packages(
     """
     db = Database(DATABASE_PATH)
     try:
-        return envelope(db.packages_for(tour_code, start_date, end_date, changed))
+        return envelope(db.packages_for(tour_code, start_date, end_date,
+                                        changed, wanted_sites()))
     finally:
         db.close()
 
