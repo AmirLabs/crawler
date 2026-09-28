@@ -755,6 +755,7 @@ async def _add_other_dates(
     wanted = [link for link in links if _still_to_come(link.date, today)]
     skipped = len(links) - len(wanted)
     replaces = any(link.replaces_this_page for link in links)
+    own_rows, own_expired = page.rows, page.expired_rows
     if replaces:
         page.rows, page.expired_rows = [], []
 
@@ -766,10 +767,17 @@ async def _add_other_dates(
             link.url, profile, client=client, timeout=timeout, today=today,
             follow_dates=False,
         )
-        _stamp_date(other.rows + other.expired_rows, link.date)
+        _stamp_date(other.rows + other.expired_rows, link.date,
+                    override=link.replaces_this_page)
         page.rows.extend(other.rows)
         page.expired_rows.extend(other.expired_rows)
         added += len(other.rows)
+
+    if replaces:
+        fetched = {_row_date(row) for row in page.rows} - {None}
+        page.rows += [row for row in own_rows if _row_date(row) not in fetched]
+        page.expired_rows += [row for row in own_expired
+                              if _row_date(row) not in fetched]
 
     page.notes.append(
         f"{len(wanted)} of {len(links)} dates the page links to were fetched"
@@ -779,7 +787,16 @@ async def _add_other_dates(
     return page
 
 
-def _stamp_date(rows: list, jalali: Optional[str]) -> None:
+def _row_date(row) -> Optional[str]:
+    """The Jalali date a row states, or ``None`` where it states none."""
+    field = row.fields.get("departure_date")
+    value = field.value if field else None
+    if isinstance(value, dict):
+        return value.get("raw")
+    return value if isinstance(value, str) else None
+
+
+def _stamp_date(rows: list, jalali: Optional[str], override: bool = False) -> None:
     """Give the rows of a per-date fetch the date that fetch asked for.
 
     Without this the eight date sets of a bisanseir page come back as 576 rows
@@ -787,9 +804,13 @@ def _stamp_date(rows: list, jalali: Optional[str]) -> None:
     no way to tell them apart, which is worse than the 72 dateless rows the
     page gave before.
 
-    A row that already names its own departure is left alone, and so is a link
-    that did not say its date: the sibling shape carries only an id, and there
-    the page itself states the date once fetched.
+    ``override`` is for the query shape, where the date is written into the URL
+    we asked for. bisanseir answers ``?date=1405-07-11`` with a page that still
+    prints its default 1405-07-06 on every row, so without it the four date
+    sets of one Kish tour come back as 48 rows that all claim one date and fold
+    into 3 offers, mixing four dates' prices. The URL we asked for is the more
+    reliable witness there. A sibling link says no date at all, so it never
+    overrides: the page it leads to is the only thing that knows.
 
     Example:
         >>> from crawler.extraction.models import ExtractedRow
@@ -797,6 +818,12 @@ def _stamp_date(rows: list, jalali: Optional[str]) -> None:
         >>> _stamp_date(rows, "1405-06-11")
         >>> rows[0].fields["departure_date"].value
         {'iso': '2026-09-02', 'raw': '1405-06-11', 'time': None}
+        >>> _stamp_date(rows, "1405-07-11")
+        >>> rows[0].fields["departure_date"].value["raw"]
+        '1405-06-11'
+        >>> _stamp_date(rows, "1405-07-11", override=True)
+        >>> rows[0].fields["departure_date"].value["raw"]
+        '1405-07-11'
     """
     if not jalali:
         return
@@ -807,7 +834,7 @@ def _stamp_date(rows: list, jalali: Optional[str]) -> None:
         return
     value = {"iso": iso, "raw": jalali, "time": None}
     for row in rows:
-        if "departure_date" in row.fields:
+        if "departure_date" in row.fields and not override:
             continue
         row.fields["departure_date"] = ExtractedField(
             value, METHOD_HEURISTIC_HTML, _DATE_LINK_SCOPE
