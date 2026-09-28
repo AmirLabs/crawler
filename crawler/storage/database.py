@@ -347,14 +347,60 @@ class Database:
 
     # --- what the API reads --------------------------------------------
 
-    def catalogue(self) -> tuple[list[dict], list[dict]]:
-        """Every live package and tour, for ``changed=false``."""
+    def codes_of(self, sites: Optional[list[str]]) -> Optional[set[str]]:
+        """The tour codes belonging to these sites, or ``None`` for all of them.
+
+        The site lives inside the record, not in a column, so it is read back
+        out of there — the same place :meth:`agencies` reads it.
+
+        Example:
+            >>> db = Database(path=None); _ = db.start_run()
+            >>> _ = db.store_tour("1", [], [{"api_id": "a",
+            ...     "source": {"website": "bisanseir.com"}}])
+            >>> _ = db.store_tour("2", [], [{"api_id": "b",
+            ...     "source": {"website": "vanrosh.com"}}])
+            >>> sorted(db.codes_of(["bisanseir.com"]))
+            ['1']
+            >>> db.codes_of(None) is None
+            True
+        """
+        if not sites:
+            return None
+        website = func.json_extract(Tour.record, "$.source.website")
+        return set(self.session.scalars(
+            select(Tour.tour_code).where(website.in_(sites))
+        ))
+
+    def catalogue(self, sites: Optional[list[str]] = None) -> tuple[list[dict], list[dict]]:
+        """Every live package and tour, for ``changed=false``.
+
+        ``sites`` narrows it to those websites, which is how one site is put in
+        front of the client while the others are still being worked on.
+
+        Example:
+            >>> db = Database(path=None); _ = db.start_run()
+            >>> _ = db.store_tour("1", [{"tour_code": "1", "number_package": "1"}],
+            ...                   [{"api_id": "a", "source": {"website": "bisanseir.com"}}])
+            >>> _ = db.store_tour("2", [{"tour_code": "2", "number_package": "1"}],
+            ...                   [{"api_id": "b", "source": {"website": "vanrosh.com"}}])
+            >>> [len(part) for part in db.catalogue()]
+            [2, 2]
+            >>> [len(part) for part in db.catalogue(["bisanseir.com"])]
+            [1, 1]
+        """
+        codes = self.codes_of(sites)
+        packages = select(Package.record)
+        tours = select(Tour.record)
+        if codes is not None:
+            packages = packages.where(Package.tour_code.in_(codes))
+            tours = tours.where(Tour.tour_code.in_(codes))
         return (
-            [json.loads(r) for r in self.session.scalars(select(Package.record))],
-            [json.loads(r) for r in self.session.scalars(select(Tour.record))],
+            [json.loads(r) for r in self.session.scalars(packages)],
+            [json.loads(r) for r in self.session.scalars(tours)],
         )
 
-    def changes(self, run: Optional[int] = None) -> tuple[list[dict], list[dict]]:
+    def changes(self, run: Optional[int] = None,
+                sites: Optional[list[str]] = None) -> tuple[list[dict], list[dict]]:
         """The packages and tours the last finished run found new or different, for ``changed=true``.
 
         Example:
@@ -366,16 +412,21 @@ class Database:
             (['b'], 2)
         """
         last = run or self._last_finished_run()
+        codes = self.codes_of(sites)
+        packages = select(Package.record).where(Package.changed_run == last)
+        tours = select(Tour.record).where(Tour.changed_run == last)
+        if codes is not None:
+            packages = packages.where(Package.tour_code.in_(codes))
+            tours = tours.where(Tour.tour_code.in_(codes))
         return (
-            [json.loads(r) for r in self.session.scalars(
-                select(Package.record).where(Package.changed_run == last))],
-            [json.loads(r) for r in self.session.scalars(
-                select(Tour.record).where(Tour.changed_run == last))],
+            [json.loads(r) for r in self.session.scalars(packages)],
+            [json.loads(r) for r in self.session.scalars(tours)],
         )
 
     def packages_for(
         self, tour_code: str, start_date: Optional[str] = None,
         end_date: Optional[str] = None, changed: bool = False,
+        sites: Optional[list[str]] = None,
     ) -> list[dict]:
         """One tour's packages, narrowed to a window of departure dates, both ends inclusive.
 
@@ -386,6 +437,9 @@ class Database:
             >>> [p["start_date"] for p in db.packages_for("1", "1405-06-20")]
             ['14050625']
         """
+        codes = self.codes_of(sites)
+        if codes is not None and tour_code not in codes:
+            return []
         query = select(Package.record).where(Package.tour_code == tour_code)
         if changed:
             query = query.where(Package.changed_run == self._last_finished_run())
