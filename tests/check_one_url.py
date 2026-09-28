@@ -1,0 +1,119 @@
+# One tour URL in, the client's two structures out, through the whole pipeline.
+# Nothing is mocked and nothing is stored: the numbers come from a database in
+# memory, so a run here cannot spend a tour_code or touch data/crawler.db.
+#
+# It answers the question a crawl cannot answer quickly — did this page give us
+# its other departure dates, and what did each one carry?
+#
+#     .venv/bin/python tests/check_one_url.py https://bisanseir.com/tour/تور-کیش-کاسپین
+#     .venv/bin/python tests/check_one_url.py <url> --out logs/one.json
+#     .venv/bin/python tests/check_one_url.py <url> --full
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import sys
+from collections import Counter
+from pathlib import Path
+from urllib.parse import urlsplit
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from crawler.extraction.page_extract import extract_page
+from crawler.filtering.menu_pages import says_nothing, tour_links
+from crawler.filtering.tour_groups import group_by_tour
+from crawler.profiler.profiler import profile_site
+from crawler.schema.converter import build_tour
+from crawler.schema.safarbank import tour_to_objects
+from crawler.schema.safarbank_tours import tour_to_listings
+from crawler.storage.database import Database
+
+TIMEOUT = 45.0
+
+
+def site_name(url: str) -> str:
+    host = urlsplit(url).netloc
+    return host.replace("www.", "").split(".")[0]
+
+
+def money(package: dict) -> str:
+    rial = max([float(r.get("final_price") or 0) for r in package.get("rooms") or []] or [0])
+    foreign = max([float(r.get("currency_price") or 0) for r in package.get("rooms") or []] or [0])
+    if rial > 0:
+        return f"{int(rial):,}"
+    return f"{foreign:,.0f} ارز" if foreign > 0 else "—"
+
+
+async def check(url: str, out: Path | None, full: bool) -> int:
+    profile = await profile_site(urlsplit(url).netloc, render=False)
+    if not profile.reachable:
+        print(f"unreachable: {profile.error}")
+        return 1
+
+    page = await extract_page(url, profile, timeout=TIMEOUT)
+    print(f"status {page.status_code}   fetched by {page.fetch_method}"
+          f"   rows {len(page.rows)}")
+    for note in page.notes:
+        print(f"   note  {note}")
+
+    db = Database(path=None)
+    db.start_run()
+    tour = build_tour(page)
+    first = tour_to_objects(tour, db, site_name(url))
+    second = tour_to_listings(tour, db)
+
+    print()
+    print(f"first structure   {len(first)} packages")
+    print(f"second structure  {len(second)} tours")
+
+    dates = Counter(record.get("start_date") or "(none)" for record in first)
+    print()
+    print(f"departure dates in the first structure: {len(dates)}")
+    for date, count in sorted(dates.items()):
+        print(f"   {date:12} {count:>4} packages")
+
+    print()
+    print(f"{'start_date':14}{'hotel':34}{'star':>5}{'price':>16}")
+    print("=" * 70)
+    for package in first if full else first[:25]:
+        hotels = package.get("hotels") or []
+        name = (hotels[0].get("name") if hotels else "") or "—"
+        star = (hotels[0].get("star_code") if hotels else "") or "—"
+        print(f"{package.get('start_date') or '—':14}{name[:33]:34}{star:>5}{money(package):>16}")
+    if not full and len(first) > 25:
+        print(f"   ... {len(first) - 25} more, pass --full to see them")
+
+    if says_nothing(first):
+        links = group_by_tour(tour_links(page.html_raw or "", url))
+        print()
+        print(f"LABELLED: nothing was read from this page. "
+              f"It links to {len(links)} tours:")
+        for group in links[:10]:
+            print(f"   {group.primary}")
+
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            json.dumps({"first_structure": first, "second_structure": second},
+                       ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print()
+        print(f"written to {out}")
+    db.close()
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("url", help="one tour page")
+    parser.add_argument("--out", type=Path, help="write both structures here as JSON")
+    parser.add_argument("--full", action="store_true", help="print every package")
+    args = parser.parse_args()
+    return asyncio.run(check(args.url, args.out, args.full))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
