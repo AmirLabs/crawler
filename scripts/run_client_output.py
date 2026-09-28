@@ -62,6 +62,7 @@ from crawler.automation.memory import UNCHANGED_NOTE
 from crawler.automation.scheduler import AlreadyRunning, only_one_run, run_log
 from crawler.config import PROJECT_ROOT
 from crawler.extraction.page_extract import extract_page
+from crawler.filtering.menu_pages import says_nothing, tour_links
 from crawler.filtering.tour_groups import group_by_tour
 from crawler.filtering.url_filter import discover_tour_urls
 from crawler.profiler.profiler import profile_site
@@ -84,6 +85,11 @@ ATTEMPTS_PER_PAGE = 12
 
 # Between requests to one site, on top of whatever its robots.txt asked for.
 POLITE_PAUSE = 1.0
+
+# How many tours one site's menu pages may add to the queue. bisanseir's 58
+# listings held 63 tours between them; a cap only stops a site that links in
+# circles from crawling itself forever.
+MENU_BUDGET = 300
 
 
 def site_name(domain: str) -> str:
@@ -114,6 +120,10 @@ async def crawl_site(domain: str, pages: int, db: Database) -> dict:
     Only a page that actually sells is kept. A URL that answers 404, or whose
     every departure has already gone, says nothing about our rules — it says
     the site has moved on — so it is recorded and the crawl keeps going.
+
+    A page that sold nothing is asked whether it is a menu of other tours
+    before it is dropped, and the tours it offers join the queue. bisanseir
+    publishes 58 such pages and they hold real tours with all their dates.
     """
     name = site_name(domain)
     result: dict = {
@@ -138,7 +148,13 @@ async def crawl_site(domain: str, pages: int, db: Database) -> dict:
         return result
 
     budget = len(candidates) if pages == 0 else pages * ATTEMPTS_PER_PAGE
-    for url in candidates[:budget]:
+    queue = candidates[:budget]
+    seen = set(queue)
+    from_menus = 0
+    index = 0
+    while index < len(queue):
+        url = queue[index]
+        index += 1
         if pages and len(result["kept"]) >= pages:
             break
         started = time.monotonic()
@@ -170,15 +186,25 @@ async def crawl_site(domain: str, pages: int, db: Database) -> dict:
         tour = build_tour(page)
         first = tour_to_objects(tour, db, name)
         second = tour_to_listings(tour, db)
-        db.store_tour(db.tour_code(url), first, second)
         took = time.monotonic() - started
 
-        if not first and not second:
-            why = "no offer could be read"
+        if says_nothing(first):
+            db.store_tour(db.tour_code(url), [], [])
+            added = 0
+            if from_menus < MENU_BUDGET:
+                for group in group_by_tour(tour_links(page.html_raw or "", url)):
+                    if group.primary not in seen:
+                        seen.add(group.primary)
+                        queue.append(group.primary)
+                        added += 1
+                from_menus += added
+            why = f"menu, {added} tours queued" if added else "no offer could be read"
             result["skipped"].append({"url": url, "why": why})
             print(f"        skipped ({why}) {took:.0f}s", flush=True)
             await asyncio.sleep(POLITE_PAUSE)
             continue
+
+        db.store_tour(db.tour_code(url), first, second)
 
         result["first"].extend(first)
         result["second"].extend(second)
