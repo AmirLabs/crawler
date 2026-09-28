@@ -23,6 +23,8 @@ line up with it is read for its dates alone.
 
 from __future__ import annotations
 
+import json
+
 from dataclasses import dataclass
 from typing import Optional
 
@@ -114,6 +116,37 @@ def _price_of(entry: dict, column: int) -> tuple[float, Optional[str], float, Op
         elif currency:
             foreign, foreign_currency = float(amount), currency
     return local, local_currency, foreign, foreign_currency
+
+
+def one_price_set(blobs: list[dict]) -> bool:
+    """Whether every date in the calendar quotes exactly the same prices.
+
+    nahalgasht publishes the whole matrix — 21 packages priced on each of 7
+    departures — and on its pages the seven sets are identical, so the rows
+    shown for one date are right for all of them. Where they are not, copying
+    a row onto another date would send a price the site never quoted, so the
+    caller leaves those pages alone.
+
+    Example:
+        >>> one_price_set([{"2026-10-24": [{"bed_prices": [{"first": 415}]}],
+        ...                 "2026-10-31": [{"bed_prices": [{"first": 415}]}]}])
+        True
+        >>> one_price_set([{"2026-10-24": [{"bed_prices": [{"first": 415}]}],
+        ...                 "2026-10-31": [{"bed_prices": [{"first": 480}]}]}])
+        False
+        >>> one_price_set([])
+        False
+    """
+    for blob in blobs:
+        entries = _entries(blob)
+        if len(entries) < 2:
+            continue
+        sets = {
+            json.dumps([one.get(_BEDS) for one in day], sort_keys=True)
+            for day in entries.values()
+        }
+        return len(sets) == 1
+    return False
 
 
 def read_calendar(
