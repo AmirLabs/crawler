@@ -107,6 +107,20 @@ absent credentials, and `500` when the server itself failed.
 
 `GET /docs` is the API's own documentation page, behind the same password.
 
+### Publishing one site at a time
+
+The sites are brought up to standard one by one, so the feed can be narrowed to
+the ones that are ready:
+
+```dotenv
+CRAWLER_API_SITES=bisanseir.com,vanrosh.com
+```
+
+Both routes then carry only those, and a `tour_code` belonging to any other
+site answers `200` with an empty list, the same as an unknown one. Leaving the
+variable out publishes every site. The report pages are not narrowed: they are
+for checking the sites that are not published yet.
+
 ### Reading the catalogue by eye
 
 The same server answers three pages, behind the same password, for checking a
@@ -129,6 +143,7 @@ shown empty, and the judgement stays with the reader.
 ```dotenv
 CRAWLER_API_USER=...          # required; the server refuses everyone without it
 CRAWLER_API_PASSWORD=...      # required
+CRAWLER_API_SITES=            # optional; a comma list of websites to publish
 CRAWLER_TIMEOUT_SECONDS=15
 CRAWLER_USER_AGENT="TourCrawler/1.0 (+contact: you@example.com)"
 ```
