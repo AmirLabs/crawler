@@ -333,20 +333,26 @@ def find_hotel_block(container: RowContainer) -> Optional[Node]:
 
     row_texts = container.texts()
     node = container.members[0].parent
+    describes: Optional[object] = None
 
     for _ in range(_MAX_LEVELS):
         if node is None or node.tag in ("body", "html", "-undef"):
-            return None
+            break
         extra = _extra_text(node, row_texts)
         if len(extra) > _MAX_BLOCK_CHARS:
             # Ancestors only ever say more, so nothing above this is a hotel
             # block either.
-            return None
+            break
         if _describes_a_hotel(extra):
-            return node
+            if _any_name_in(node, extra):
+                return node
+            # A level can talk about hotels and name none: nahalgasht's price
+            # panel carries a "رزرو با این هتل" button, and stopping there left
+            # every package on the page nameless and folded them into one.
+            describes = describes or node
         node = node.parent
 
-    return None
+    return describes
 
 
 def _surrounding_text(block: Node, row_texts: list[str]) -> str:
@@ -502,6 +508,25 @@ def image_in_block(block: Node) -> Optional[str]:
             return found[0]
         node, level = node.parent, level + 1
     return None
+
+
+def _any_name_in(block, extra: str) -> bool:
+    """Whether this level names a hotel, rather than only mentioning one.
+
+    Example:
+        >>> from selectolax.parser import HTMLParser
+        >>> tree = HTMLParser('<div><p>Lazdana Hotel</p></div>')
+        >>> _any_name_in(tree.css_first("div"), "Lazdana Hotel")
+        True
+        >>> tree = HTMLParser('<div><p>رزرو با این هتل</p></div>')
+        >>> _any_name_in(tree.css_first("div"), "رزرو با این هتل")
+        False
+    """
+    for node in block.css("*"):
+        own = _clean(node.text(deep=False))
+        if own and own in extra and _looks_like_a_name(own):
+            return True
+    return False
 
 
 def read_hotel_block(container: RowContainer) -> HotelBlock:
