@@ -22,6 +22,7 @@ from datetime import date
 from typing import Optional
 
 from crawler.extraction.readers.dates import gregorian_to_jalali, jalali_to_gregorian
+from crawler.api.queries import as_packed
 from crawler.schema.identifiers import PROVIDER_ID, IdStore
 from crawler.schema.output_models import (
     CURRENCY_TOMAN,
@@ -248,7 +249,7 @@ def offer_to_object(
     tour_code = ids.tour_code(tour.tour_url, month)
     start = to_jalali_parts(offer.departure.iso)
     end = to_jalali_parts(offer.ret.iso)
-    packed = packed_date(start) or month
+    packed = packed_date(start) or as_packed(month) or ""
 
     fk = ids.fk_tour_id(tour_code, packed)
     out: dict = {

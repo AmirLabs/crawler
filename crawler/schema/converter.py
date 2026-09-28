@@ -34,7 +34,7 @@ from typing import Any, Optional
 from crawler.extraction.models import ExtractedPage, ExtractedRow
 from crawler.extraction.readers.dates import gregorian_to_jalali, jalali_to_gregorian
 from crawler.extraction.readers.labels import detect_nights
-from crawler.extraction.readers.dates import SEASONS, find_period, month_name
+from crawler.extraction.readers.dates import SEASONS, find_period
 from crawler.schema.output_models import (
     ROOM_DOUBLE,
     Agency,
@@ -89,6 +89,16 @@ def _jalali_string(iso: Optional[str]) -> Optional[str]:
     return f"{jy:04d}-{jm:02d}-{jd:02d}"
 
 
+# The year a stated month is sent under. The sites never write it, and the
+# client wants a date rather than a month name, so one is chosen here. Bump it
+# when the season turns: this is a fixed year, not a calculated one.
+MONTH_YEAR = 1405
+
+# The last day of each Jalali month. اسفند is 29 in an ordinary year.
+_LAST_DAY = {1: 31, 2: 31, 3: 31, 4: 31, 5: 31, 6: 31,
+             7: 30, 8: 30, 9: 30, 10: 30, 11: 30, 12: 29}
+
+
 def _month_only(raw: Optional[Any]) -> Optional[str]:
     """The month a dateless departure names, as the client is sent it.
 
@@ -96,13 +106,19 @@ def _month_only(raw: Optional[Any]) -> Optional[str]:
     تاریخ رفت — and 471 of its 738 tours reached the client with no departure
     at all. The month is sent in its place, without the "ماه" the site adds.
 
+    The month is sent as its last day, which is what the client asked for so
+    that every departure they hold is one shape. A tour sold in مهر is sent as
+    1405-07-30.
+
     A season is left alone. "ویژه زمستان" is read as اسفند for deciding that a
     tour is over, but sending اسفند as its departure would put a month on the
     page that the site never wrote.
 
     Example:
         >>> _month_only("مهر ماه")
-        'مهر'
+        '1405-07-30'
+        >>> _month_only("آبان ماه"), _month_only("خرداد ماه")
+        ('1405-08-30', '1405-03-31')
         >>> _month_only("ویژه زمستان") is None
         True
         >>> _month_only("07 شهریور") is None
@@ -113,7 +129,9 @@ def _month_only(raw: Optional[Any]) -> Optional[str]:
     if not isinstance(raw, str) or any(season in raw for season in SEASONS):
         return None
     period = find_period(raw)
-    return month_name(period.month) if period else None
+    if period is None or not period.month:
+        return None
+    return f"{MONTH_YEAR}-{period.month:02d}-{_LAST_DAY[period.month]:02d}"
 
 
 def _tour_date(value: Optional[Any]) -> TourDate:

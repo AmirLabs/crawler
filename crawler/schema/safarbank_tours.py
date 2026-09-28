@@ -35,6 +35,7 @@ from typing import Optional
 
 from crawler.extraction.readers.places import is_a_departure_city
 from crawler.schema.agencies import agency_info, agency_name, host_of
+from crawler.api.queries import as_packed
 from crawler.schema.identifiers import PROVIDER_ID, IdStore
 from crawler.schema.safarbank import (
     CURRENCY_NAMES,
@@ -265,8 +266,11 @@ def _packed_start(offer: TourOffer) -> str:
         '14050621'
         >>> _packed_start(TourOffer())
         '14000101'
+        >>> _packed_start(TourOffer(departure=TourDate(jalali="1405-07-30")))
+        '14050730'
     """
-    return packed_date(to_jalali_parts(offer.departure.iso)) or NO_DEPARTURE
+    return (packed_date(to_jalali_parts(offer.departure.iso))
+            or as_packed(_month_part(offer)) or NO_DEPARTURE)
 
 
 def _month_part(offer: TourOffer) -> str:
