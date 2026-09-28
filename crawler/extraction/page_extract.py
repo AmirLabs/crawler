@@ -33,6 +33,8 @@ from the tour's title instead.
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 from datetime import date
 from typing import Callable, Optional
 from urllib.parse import urljoin, urlparse
@@ -41,7 +43,11 @@ import httpx
 from selectolax.parser import HTMLParser
 
 from crawler.config import DEFAULT_TIMEOUT_SECONDS
-from crawler.extraction.extractor import fetch_page, render_beside
+from crawler.extraction.extractor import (
+    _extract_embedded_json,
+    fetch_page,
+    render_beside,
+)
 from crawler.extraction.structure.html_rows import (
     MIN_ROW_SCORE,
     find_row_containers,
@@ -49,6 +55,7 @@ from crawler.extraction.structure.html_rows import (
 )
 from crawler.extraction.embedded_offers import offer_date_links, offers_in, rows_from_offers
 from crawler.extraction.structure.date_calendar import (
+    one_price_set,
     package_rooms,
     read_calendar,
 )
@@ -339,6 +346,41 @@ def _absolute_hotel_images(page: ExtractedPage) -> None:
             field.value = urljoin(page.url, field.value)
 
 
+def _spread_over_the_calendar(page: ExtractedPage) -> None:
+    """Give the rows the calendar's departures where they have none of their own.
+
+    nahalgasht shows one date's packages and keeps the rest in the calendar
+    beside them: 21 hotels on each of 7 departures, all at the same prices. The
+    rows themselves say only which month it is, so without this the whole page
+    went out as one undated month and six departures were never sent.
+
+    Only where every date quotes the same prices. Where they differ the rows on
+    screen belong to one date alone, and copying them onto another would send a
+    price that site never quoted — bisanseir moves 265,000,000 to 365,000,000
+    between two dates of one tour.
+
+    A row that names its own departure is left alone, as always.
+    """
+    dated = [entry.jalali for entry in page.calendar if entry.jalali]
+    if len(dated) < 2 or not page.rows:
+        return
+    if any(_row_date(row) and _row_date(row)[:4].isdigit() and "-" in _row_date(row)
+           for row in page.rows):
+        return
+    if not one_price_set(page.embedded_json):
+        return
+
+    spread: list = []
+    for jalali in dated:
+        copies = deepcopy(page.rows)
+        _stamp_date(copies, jalali, override=True)
+        spread.extend(copies)
+    page.notes.append(
+        f"{len(page.rows)} rows spread over {len(dated)} calendar departures"
+    )
+    page.rows = spread
+
+
 def _read_calendar(page: ExtractedPage, today: Optional[date]) -> list:
     """The departures the page states as data, minus the ones already gone.
 
@@ -447,6 +489,7 @@ def extract_page_from_html(
     _absolute_hotel_images(page)
     _drop_the_hotel_from_destination(page)
     page.calendar = _read_calendar(page, today)
+    _spread_over_the_calendar(page)
     if added:
         page.notes.append(f"filled {added} fields from facts stated once for the page")
     if len(rows) != before:
@@ -1017,7 +1060,13 @@ def _settle_render_question(
         return fetched
 
     before = fetched.html_before_render
-    plain = extract_page_from_html(fetched.url, before, today=today)
+    # The blobs have to be read out of the markup this page is built from. The
+    # ones on ``fetched`` came from the rendered document, where nahalgasht's
+    # Vue app has already consumed the <script> holding its calendar, so
+    # keeping them here handed the winning page an empty one and lost the
+    # seven real departures of every tour on that site.
+    plain = extract_page_from_html(fetched.url, before,
+                                   _extract_embedded_json(before), today=today)
     rendered_rows = len(
         extract_page_from_html(fetched.url, fetched.html_raw, fetched.embedded_json,
                                today=today).rows
