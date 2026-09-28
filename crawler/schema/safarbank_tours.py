@@ -269,6 +269,27 @@ def _packed_start(offer: TourOffer) -> str:
     return packed_date(to_jalali_parts(offer.departure.iso)) or NO_DEPARTURE
 
 
+def _month_part(offer: TourOffer) -> str:
+    """The month this departure names where it names no day, else empty.
+
+    A page sold across two months becomes two tours, and this is what keeps
+    them apart: their codes, their ids and their dates all hang off it.
+
+    Example:
+        >>> from crawler.schema.output_models import TourDate
+        >>> _month_part(TourOffer(departure=TourDate(jalali="مهر")))
+        'مهر'
+        >>> _month_part(TourOffer(departure=TourDate(iso="2026-09-12",
+        ...                                          jalali="1405-06-21")))
+        ''
+        >>> _month_part(TourOffer())
+        ''
+    """
+    if offer.departure.iso:
+        return ""
+    return offer.departure.jalali or ""
+
+
 def offer_to_listing(tour: Tour, offer: TourOffer, ids: IdStore) -> dict:
     """One departure of one tour, as one of their listing objects.
 
@@ -287,9 +308,10 @@ def offer_to_listing(tour: Tour, offer: TourOffer, ids: IdStore) -> dict:
         >>> out["start_date"], out["end_date"], out["exit_hours"]
         ('1405-06-21', '1405-06-28', '22:45')
     """
-    same = ids.tour_code(tour.tour_url)
+    month = _month_part(offer)
+    same = ids.tour_code(tour.tour_url, month)
     packed = _packed_start(offer)
-    row = ids.fk_tour_id(same, packed)
+    row = ids.fk_tour_id(same, month or packed)
     price, foreign, currency = _price_parts(offer)
     vehicle = VEHICLE_NAMES.get(tour.transportation_type or "", "")
     airline = (offer.transport.name if offer.transport else "") or ""
@@ -306,7 +328,7 @@ def offer_to_listing(tour: Tour, offer: TourOffer, ids: IdStore) -> dict:
         "tour_type": _tour_types(tour, offer),
         "tour_code": same,
         "start_date": offer.departure.jalali or "",
-        "end_date": offer.ret.jalali or "",
+        "end_date": offer.ret.jalali or month,
         "night": str(offer.nights) if offer.nights else "",
         "day": str(offer.nights + 1) if offer.nights else "",
         "tour_pic": tour.image_url or "",
@@ -399,7 +421,9 @@ def tour_to_listings(tour: Tour, ids: IdStore) -> list[dict]:
     # different local price. Dropped rather than guessed at.
     cheapest: dict[str, TourOffer] = {}
     for offer in tour.offers:
-        key = packed_date(to_jalali_parts(offer.departure.iso))
+        # A month is a departure of its own here: a page sold across two months
+        # is two tours, and folding on the date alone made them one.
+        key = packed_date(to_jalali_parts(offer.departure.iso)) or _month_part(offer)
         if not key and tour.listing_only:
             continue
         best = cheapest.get(key)
@@ -410,7 +434,9 @@ def tour_to_listings(tour: Tour, ids: IdStore) -> list[dict]:
     # knows neither, so replacing one with the other would lose more than the
     # price it brings.
     for offer in tour.listing_only:
-        cheapest.setdefault(packed_date(to_jalali_parts(offer.departure.iso)), offer)
+        cheapest.setdefault(
+            packed_date(to_jalali_parts(offer.departure.iso)) or _month_part(offer),
+            offer)
     return [offer_to_listing(tour, offer, ids)
             for _, offer in sorted(cheapest.items())]
 

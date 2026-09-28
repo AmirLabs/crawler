@@ -111,14 +111,25 @@ class IdStore:
         self._data["next"][counter] = number + 1
         return number
 
-    def tour_code(self, page_url: str) -> str:
+    def tour_code(self, page_url: str, part: str = "") -> str:
         """The code for this tour, minted once and reused for ever after.
 
+        ``part`` separates one page that sells several tours. nahalgasht offers
+        one page across two months and the client buys each month on its own,
+        so each month needs a code of its own.
+
         Example:
-            >>> IdStore(path=None).tour_code("https://x.com/tour/1?date=1405-06-11")
+            >>> store = IdStore(path=None)
+            >>> store.tour_code("https://x.com/tour/1?date=1405-06-11")
             '31540001'
+            >>> store.tour_code("https://x.com/tour/1", "مهر")
+            '31540002'
+            >>> store.tour_code("https://x.com/tour/1", "آبان")
+            '31540003'
+            >>> store.tour_code("https://x.com/tour/1", "مهر")
+            '31540002'
         """
-        key = tour_key(page_url)
+        key = tour_key(page_url) + (f"|{part}" if part else "")
         known = self._data["tour_code"].get(key)
         if known is None:
             known = f"{TOUR_CODE_PREFIX}{self._take('tour'):0{TOUR_CODE_DIGITS}d}"

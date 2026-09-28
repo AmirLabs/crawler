@@ -45,6 +45,7 @@ from crawler.extraction.readers.dates import (
     DateText,
     find_dates,
     find_period,
+    find_periods,
     gregorian_to_jalali,
     to_iso,
 )
@@ -330,6 +331,9 @@ def _caption_value(node, captions: tuple[re.Pattern, ...]) -> list[DateText]:
         >>> tree = HTMLParser('<div><span>تاریخ حرکت</span><span>ویژه زمستان</span></div>')
         >>> [(d.raw, d.month, d.day) for d in _caption_value(tree.css_first("span"), _DEPARTURE_CAPTIONS)]
         [('ویژه زمستان', 12, None)]
+        >>> tree = HTMLParser('<div><span>تاریخ رفت</span><span>مهر ماه - آبان ماه</span></div>')
+        >>> [d.month for d in _caption_value(tree.css_first("span"), _DEPARTURE_CAPTIONS)]
+        [7, 8]
     """
     own = _clean(node.text(deep=False))
     if not own or len(own) > _MAX_CAPTION_CHARS:
@@ -344,12 +348,12 @@ def _caption_value(node, captions: tuple[re.Pattern, ...]) -> list[DateText]:
         places.append(_clean(node.parent.text(deep=True))[len(own):])
     places += _card_above(node)
 
-    period: Optional[DateText] = None
+    period: list[DateText] = []
     for text in places:
         found = find_dates(text or "")
         if found and _DAY_RANGE.search(normalize_digits(text)):
             return []
-        period = period or find_period(text or "")
+        period = period or find_periods(text or "")
         if found:
             seen: set[tuple] = set()
             kept: list[DateText] = []
@@ -362,7 +366,7 @@ def _caption_value(node, captions: tuple[re.Pattern, ...]) -> list[DateText]:
             if kept:
                 return kept
     # No day anywhere: a month or season alone still tells availability when the tour ends.
-    return [period] if period else []
+    return period
 
 
 def _card_above(node) -> list[str]:
@@ -746,8 +750,14 @@ def read_page_facts(html: str) -> PageFacts:
     """
     text = main_text(html)
     departures, returning = read_dates(text)
-    if not departures:
-        departures, returning = read_block_dates(html)
+    if not departures or all(one.day is None for one in departures):
+        # A departure with no day is a month, and a month is read better from
+        # the markup: running text ends the value wherever the layout did, so
+        # "مهر ماه - آبان ماه" reached here as مهر alone and the tour lost half
+        # of what it sells.
+        block, block_return = read_block_dates(html)
+        if len(block) > len(departures):
+            departures, returning = block, block_return or returning
     nights = _labelled(text, _NIGHT_LABELS, detect_nights, _LABEL_VALUE_WINDOW)
     if nights is None:
         nights = title_nights(html)

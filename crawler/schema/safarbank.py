@@ -244,10 +244,11 @@ def offer_to_object(
         >>> out["tour_code"], out["provider_id"], out["number_package"]
         ('31540001', 110110110, '1')
     """
-    tour_code = ids.tour_code(tour.tour_url)
+    month = "" if offer.departure.iso else (offer.departure.jalali or "")
+    tour_code = ids.tour_code(tour.tour_url, month)
     start = to_jalali_parts(offer.departure.iso)
     end = to_jalali_parts(offer.ret.iso)
-    packed = packed_date(start)
+    packed = packed_date(start) or month
 
     fk = ids.fk_tour_id(tour_code, packed)
     out: dict = {

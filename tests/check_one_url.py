@@ -8,6 +8,7 @@
 #     .venv/bin/python tests/check_one_url.py https://bisanseir.com/tour/تور-کیش-کاسپین
 #     .venv/bin/python tests/check_one_url.py <url> --out logs/one.json
 #     .venv/bin/python tests/check_one_url.py <url> --full
+#     .venv/bin/python tests/check_one_url.py <url> --dump logs/one
 
 from __future__ import annotations
 
@@ -46,7 +47,7 @@ def money(package: dict) -> str:
     return f"{foreign:,.0f} ارز" if foreign > 0 else "—"
 
 
-async def check(url: str, out: Path | None, full: bool) -> int:
+async def check(url: str, out: Path | None, full: bool, dump: Path | None) -> int:
     profile = await profile_site(urlsplit(url).netloc, render=False)
     if not profile.reachable:
         print(f"unreachable: {profile.error}")
@@ -54,9 +55,32 @@ async def check(url: str, out: Path | None, full: bool) -> int:
 
     page = await extract_page(url, profile, timeout=TIMEOUT)
     print(f"status {page.status_code}   fetched by {page.fetch_method}"
-          f"   rows {len(page.rows)}")
+          f"   rows {len(page.rows)}   embedded blobs {len(page.embedded_json)}"
+          f"   calendar {len(page.calendar)}")
     for note in page.notes:
         print(f"   note  {note}")
+
+    where = Counter()
+    for row in page.rows:
+        field = row.fields.get("departure_date")
+        value = field.value if field else None
+        raw = value.get("raw") if isinstance(value, dict) else value
+        where[(raw, field.source_key if field else None)] += 1
+    print()
+    print("what each row says it leaves on, and where that came from:")
+    for (raw, source), count in where.most_common(8):
+        print(f"   {count:>4}  {str(raw):18} {source}")
+
+    if dump:
+        dump.mkdir(parents=True, exist_ok=True)
+        (dump / "page.html").write_text(page.html_raw or "", encoding="utf-8")
+        (dump / "embedded.json").write_text(
+            json.dumps(page.embedded_json, ensure_ascii=False, indent=2), encoding="utf-8")
+        (dump / "rows.json").write_text(
+            json.dumps([{name: field.value for name, field in row.fields.items()}
+                        for row in page.rows], ensure_ascii=False, indent=2),
+            encoding="utf-8")
+        print(f"\n   dumped page.html, embedded.json and rows.json to {dump}")
 
     db = Database(path=None)
     db.start_run()
@@ -111,8 +135,10 @@ def main() -> int:
     parser.add_argument("url", help="one tour page")
     parser.add_argument("--out", type=Path, help="write both structures here as JSON")
     parser.add_argument("--full", action="store_true", help="print every package")
+    parser.add_argument("--dump", type=Path,
+                        help="write the page, its embedded JSON and its rows here")
     args = parser.parse_args()
-    return asyncio.run(check(args.url, args.out, args.full))
+    return asyncio.run(check(args.url, args.out, args.full, args.dump))
 
 
 if __name__ == "__main__":

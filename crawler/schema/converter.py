@@ -34,6 +34,7 @@ from typing import Any, Optional
 from crawler.extraction.models import ExtractedPage, ExtractedRow
 from crawler.extraction.readers.dates import gregorian_to_jalali, jalali_to_gregorian
 from crawler.extraction.readers.labels import detect_nights
+from crawler.extraction.readers.dates import SEASONS, find_period, month_name
 from crawler.schema.output_models import (
     ROOM_DOUBLE,
     Agency,
@@ -88,6 +89,33 @@ def _jalali_string(iso: Optional[str]) -> Optional[str]:
     return f"{jy:04d}-{jm:02d}-{jd:02d}"
 
 
+def _month_only(raw: Optional[Any]) -> Optional[str]:
+    """The month a dateless departure names, as the client is sent it.
+
+    nahalgasht sells by the month rather than the day — "مهر ماه" under
+    تاریخ رفت — and 471 of its 738 tours reached the client with no departure
+    at all. The month is sent in its place, without the "ماه" the site adds.
+
+    A season is left alone. "ویژه زمستان" is read as اسفند for deciding that a
+    tour is over, but sending اسفند as its departure would put a month on the
+    page that the site never wrote.
+
+    Example:
+        >>> _month_only("مهر ماه")
+        'مهر'
+        >>> _month_only("ویژه زمستان") is None
+        True
+        >>> _month_only("07 شهریور") is None
+        True
+        >>> _month_only(None) is None
+        True
+    """
+    if not isinstance(raw, str) or any(season in raw for season in SEASONS):
+        return None
+    period = find_period(raw)
+    return month_name(period.month) if period else None
+
+
 def _tour_date(value: Optional[Any]) -> TourDate:
     """Build a :class:`TourDate` from what :mod:`row_mapping` recorded.
 
@@ -103,7 +131,7 @@ def _tour_date(value: Optional[Any]) -> TourDate:
         return TourDate(
             raw=value.get("raw"),
             iso=iso,
-            jalali=_jalali_string(iso),
+            jalali=_jalali_string(iso) or _month_only(value.get("raw")),
             time=value.get("time"),
         )
     if isinstance(value, str):

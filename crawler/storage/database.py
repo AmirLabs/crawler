@@ -89,6 +89,18 @@ def jalali_today(today: Optional[date] = None) -> str:
     return f"{year:04d}{month:02d}{day:02d}"
 
 
+def _code_key(page_url: str, part: str) -> str:
+    """What a tour code is remembered under: the page, and which of its tours.
+
+    Example:
+        >>> _code_key("https://x.com/tour/1?date=1405-06-11", "")
+        'https://x.com/tour/1'
+        >>> _code_key("https://x.com/tour/1", "مهر")
+        'https://x.com/tour/1|مهر'
+    """
+    return tour_key(page_url) + (f"|{part}" if part else "")
+
+
 class Database:
     """The crawl's memory, one SQLite file.
 
@@ -122,17 +134,31 @@ class Database:
         counter.next = number + 1
         return number
 
-    def known_tour_code(self, page_url: str) -> Optional[str]:
+    def known_tour_code(self, page_url: str, part: str = "") -> Optional[str]:
         """The code this page already holds, minting nothing."""
-        found = self.session.get(TourCode, tour_key(page_url))
+        found = self.session.get(TourCode, _code_key(page_url, part))
         return found.code if found else None
 
-    def tour_code(self, page_url: str) -> str:
-        """The code for this tour, minted once and reused for ever after."""
-        known = self.known_tour_code(page_url)
+    def tour_code(self, page_url: str, part: str = "") -> str:
+        """The code for this tour, minted once and reused for ever after.
+
+        ``part`` separates one page that sells several tours. nahalgasht offers
+        one page across two months and the client buys each month on its own,
+        so each month needs a code of its own.
+
+        Example:
+            >>> db = Database(path=None)
+            >>> db.tour_code("https://x.com/tour/1")
+            '31540001'
+            >>> db.tour_code("https://x.com/tour/1", "مهر")
+            '31540002'
+            >>> db.tour_code("https://x.com/tour/1", "مهر")
+            '31540002'
+        """
+        known = self.known_tour_code(page_url, part)
         if known is None:
             known = f"{TOUR_CODE_PREFIX}{self._take('tour'):0{TOUR_CODE_DIGITS}d}"
-            self.session.add(TourCode(key=tour_key(page_url), code=known))
+            self.session.add(TourCode(key=_code_key(page_url, part), code=known))
         return known
 
     def fk_tour_id(self, tour_code: str, start_date: str) -> str:

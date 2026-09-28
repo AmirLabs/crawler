@@ -405,6 +405,66 @@ _PERIOD_RE = re.compile(
 )
 
 
+# A value naming several months: "مهر ماه - آبان ماه", "مهر تا دی". nahalgasht
+# offers one tour across two months and prints the span here, and the client
+# buys each month separately, so both halves have to be read.
+# A word separator needs the spaces around it: without them the "و" of
+# "ویژه زمستان" splits the value and the season is lost.
+_BETWEEN_MONTHS = re.compile(r"\s*[-–—،,]\s*|\s+(?:تا|الی|و)\s+")
+
+# The name to send back, one per month number, without the "ماه" the site adds.
+MONTH_NAME: dict[int, str] = {
+    number: spellings[0] for number, spellings in enumerate(_MONTH_NAMES, start=1)
+}
+
+
+def month_name(number: Optional[int]) -> str:
+    """The Persian name of a month number, or empty where there is none.
+
+    Example:
+        >>> month_name(7), month_name(8), month_name(None)
+        ('مهر', 'آبان', '')
+    """
+    return MONTH_NAME.get(number or 0, "")
+
+
+def find_periods(text: str) -> list[DateText]:
+    """Every month a caption value names, in the order printed.
+
+    One month is the common case and comes back as a list of one.
+    ``مهر ماه - آبان ماه`` is a tour sold in both months, which the client
+    takes as two tours, so both are returned. A value where any part is not a
+    month is not a list of months at all and comes back empty — prose with a
+    month in it must not become a departure.
+
+    Example:
+        >>> [d.month for d in find_periods("مهر ماه - آبان ماه")]
+        [7, 8]
+        >>> [d.raw for d in find_periods("مهر ماه")]
+        ['مهر ماه']
+        >>> [d.month for d in find_periods("مهر تا دی")]
+        [7, 10]
+        >>> find_periods("سفری به یاد ماندنی در تابستان")
+        []
+        >>> find_periods("مهر ماه - هر وقت خواستید")
+        []
+    """
+    value = " ".join(normalize_digits(text or "").split())
+    if not value:
+        return []
+    parts = [part for part in _BETWEEN_MONTHS.split(value) if part]
+    found = [find_period(part) for part in parts]
+    if not found or any(one is None for one in found):
+        return []
+    seen: set[int] = set()
+    months: list[DateText] = []
+    for one in found:
+        if one.month not in seen:
+            seen.add(one.month)
+            months.append(one)
+    return months
+
+
 def find_period(text: str) -> Optional[DateText]:
     """A caption value that names only a month or a season, as a dayless date.
 
