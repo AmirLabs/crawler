@@ -149,6 +149,42 @@ def one_price_set(blobs: list[dict]) -> bool:
     return False
 
 
+def prices_by_date(blobs: list[dict]) -> dict[str, list[list[tuple]]]:
+    """Every price the calendar states, by date, then by package, then by room.
+
+    ``read_calendar`` keeps only what a date starts from, which is all a
+    listing needs. The packages need the whole matrix: nahalgasht prices each
+    of its 9 hotels on each of its 3 departures, and the third departure is
+    40,900,000 where the other two are 42,900,000.
+
+    Each price is what :func:`_price_of` returns — the local half, its
+    currency, the foreign half and its currency.
+
+    Example:
+        >>> blob = {"2026-10-24": [{"second_price_currency": "تومان",
+        ...                         "bed_prices": [{"second": 42900000},
+        ...                                        {"second": 55000000}]}]}
+        >>> found = prices_by_date([blob])
+        >>> sorted(found), found["1405-08-02"][0][0]
+        (['1405-08-02'], (42900000.0, 'IRT', 0.0, None))
+    """
+    found: dict[str, list[list[tuple]]] = {}
+    for blob in blobs:
+        for key, packages in _entries(blob).items():
+            dates = dates_in_keys({key: None})
+            if not dates or not isinstance(packages, list):
+                continue
+            rows = []
+            for package in packages:
+                if not isinstance(package, dict):
+                    continue
+                columns = len(package.get(_BEDS) or [])
+                rows.append([_price_of(package, column) for column in range(columns)])
+            if rows:
+                found[dates[0]] = rows
+    return found
+
+
 def read_calendar(
     blobs: list[dict],
     room_order: list[str],

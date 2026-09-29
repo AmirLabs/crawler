@@ -56,6 +56,7 @@ from crawler.extraction.structure.html_rows import (
 from crawler.extraction.embedded_offers import offer_date_links, offers_in, rows_from_offers
 from crawler.extraction.structure.date_calendar import (
     one_price_set,
+    prices_by_date,
     package_rooms,
     read_calendar,
 )
@@ -346,6 +347,74 @@ def _absolute_hotel_images(page: ExtractedPage) -> None:
             field.value = urljoin(page.url, field.value)
 
 
+def _packages_and_rooms(rows: list) -> Optional[list[tuple[int, int]]]:
+    """Where each row sits in the page: which package, and which of its rooms.
+
+    The calendar states its prices in that order and names nothing, so this is
+    what lets one be given to the other. A run of rows sharing a hotel is one
+    package, in the order the blocks were read.
+
+    ``None`` when the rows cannot be lined up — a row with no hotel, or a page
+    whose packages do not all list the same rooms. Guessing there would put a
+    child's rate in a double room, which is worse than the date it buys.
+    """
+    places: list[tuple[int, int]] = []
+    package = -1
+    room = 0
+    last: Optional[str] = None
+    for row in rows:
+        field = row.fields.get("hotel_name")
+        name = field.value if field else None
+        if not name:
+            return None
+        if name != last:
+            package += 1
+            room = 0
+            last = name
+        places.append((package, room))
+        room += 1
+    return places or None
+
+
+def _reprice(rows: list, places: list[tuple[int, int]], matrix: list[list[tuple]]) -> None:
+    """Put this date's own price on each row, leaving the rest of it alone."""
+    for row, (package, room) in zip(rows, places):
+        field = row.fields.get("price")
+        if field is None or package >= len(matrix) or room >= len(matrix[package]):
+            continue
+        local, local_currency, foreign, foreign_currency = matrix[package][room]
+        if not local and not foreign:
+            continue
+        value = dict(field.value) if isinstance(field.value, dict) else {}
+        value.update({
+            "amount": local or 0.0,
+            "currency": local_currency or value.get("currency"),
+            "foreign_amount": foreign or None,
+            "foreign_currency": foreign_currency,
+        })
+        field.value = value
+
+
+def _drop_the_month(page: ExtractedPage) -> None:
+    """Take the page's month back off the rows, leaving them undated.
+
+    The month is the last resort, and a page whose calendar names its
+    departures is not out of resorts. A row that states a real date of its own
+    keeps it; only the month put there for want of anything better goes.
+    """
+    dropped = 0
+    for row in page.rows + page.expired_rows:
+        field = row.fields.get("departure_date")
+        value = field.value if field else None
+        if isinstance(value, dict) and not value.get("iso"):
+            del row.fields["departure_date"]
+            dropped += 1
+    if dropped:
+        page.notes.append(
+            f"took the month off {dropped} rows; the calendar states the dates"
+        )
+
+
 def _spread_over_the_calendar(page: ExtractedPage) -> None:
     """Give the rows the calendar's departures where they have none of their own.
 
@@ -367,16 +436,28 @@ def _spread_over_the_calendar(page: ExtractedPage) -> None:
     if any(_row_date(row) and _row_date(row)[:4].isdigit() and "-" in _row_date(row)
            for row in page.rows):
         return
-    if not one_price_set(page.embedded_json):
+    matrix = prices_by_date(page.embedded_json)
+    same = one_price_set(page.embedded_json)
+    places = _packages_and_rooms(page.rows) if not same else None
+    if not same and places is None:
+        # The dates differ in price and the rows cannot be lined up with the
+        # calendar's, so there is no honest price to give the copies. The month
+        # goes anyway: a page that states its departures has no need of the
+        # fallback, and keeping it invented a fourth tour on 30 مهر beside the
+        # three this one really sells.
+        _drop_the_month(page)
         return
 
     spread: list = []
     for jalali in dated:
         copies = deepcopy(page.rows)
         _stamp_date(copies, jalali, override=True)
+        if places is not None:
+            _reprice(copies, places, matrix.get(jalali) or [])
         spread.extend(copies)
     page.notes.append(
         f"{len(page.rows)} rows spread over {len(dated)} calendar departures"
+        + ("" if same else ", each at that date's own prices")
     )
     page.rows = spread
 
