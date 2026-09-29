@@ -34,7 +34,7 @@ from typing import Any, Optional
 from crawler.extraction.models import ExtractedPage, ExtractedRow
 from crawler.extraction.readers.dates import gregorian_to_jalali, jalali_to_gregorian
 from crawler.extraction.readers.labels import detect_nights
-from crawler.extraction.readers.dates import SEASONS, find_period
+from crawler.extraction.readers.dates import find_period
 from crawler.schema.output_models import (
     ROOM_DOUBLE,
     Agency,
@@ -110,23 +110,23 @@ def _month_only(raw: Optional[Any]) -> Optional[str]:
     that every departure they hold is one shape. A tour sold in مهر is sent as
     1405-07-30.
 
-    A season is left alone. "ویژه زمستان" is read as اسفند for deciding that a
-    tour is over, but sending اسفند as its departure would put a month on the
-    page that the site never wrote.
+    A season is its last day too. SEASONS already reads a season as the month
+    it ends in, so "پاییز 1405" leaves on 1405-09-30 — the last day a tour sold
+    for that season can leave.
 
     Example:
         >>> _month_only("مهر ماه")
         '1405-07-30'
         >>> _month_only("آبان ماه"), _month_only("خرداد ماه")
         ('1405-08-30', '1405-03-31')
-        >>> _month_only("ویژه زمستان") is None
-        True
+        >>> _month_only("پاییز 1405"), _month_only("ویژه زمستان")
+        ('1405-09-30', '1405-12-29')
         >>> _month_only("07 شهریور") is None
         True
         >>> _month_only(None) is None
         True
     """
-    if not isinstance(raw, str) or any(season in raw for season in SEASONS):
+    if not isinstance(raw, str):
         return None
     period = find_period(raw)
     if period is None or not period.month:
