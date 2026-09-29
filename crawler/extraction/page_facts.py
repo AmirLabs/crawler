@@ -112,6 +112,10 @@ _LABEL_WINDOW = 240
 _MAX_CAPTION_CHARS = 40
 
 # "1 تا 30 مهر" is every day of a window, not a departure; reading it gave 30 مهر.
+# What joins the two ends of a window: "از 6 مهر تا 30 مهر". A list of
+# departures is written with ، or و instead, and stays a list.
+_A_SPAN = re.compile(r"^" + _GAP + r"(?:تا|الی|-|–|—)" + _GAP + r"$")
+
 _DAY_RANGE = re.compile(r"\d{1,2}" + _GAP + r"(?:تا|الی)" + _GAP + r"\d{1,2}")
 
 # A hotels section is found by its heading. The names under it are short; a
@@ -252,6 +256,12 @@ def _departures_after(text: str, at: int, first: DateText) -> list[DateText]:
         >>> found = find_dates(text)
         >>> [(d.day, d.month) for d in _departures_after(text, 0, found[0])]
         [(25, 4), (12, 5), (29, 5), (19, 6)]
+
+        A window is one departure, on the day it closes:
+
+        >>> span = "تاریخ رفت از 6 مهر تا 30 مهر"
+        >>> [(d.day, d.month) for d in _departures_after(span, 0, find_dates(span)[0])]
+        [(30, 7)]
     """
     window = text[at: at + _LABEL_WINDOW]
     for caption in _RETURN_CAPTIONS:
@@ -267,6 +277,13 @@ def _departures_after(text: str, at: int, first: DateText) -> list[DateText]:
             continue
         seen.add(key)
         departures.append(parsed)
+    if len(departures) == 2 and _A_SPAN.search(
+        window[departures[0].end: departures[1].start]
+    ):
+        # "از 6 مهر تا 30 مهر" is one tour open across a window, not two
+        # departures. Read as two, its first half expires while the tour is
+        # still on sale and the page comes back holding half of what it shows.
+        return [departures[1]]
     return departures or [first]
 
 
@@ -363,6 +380,15 @@ def _caption_value(node, captions: tuple[re.Pattern, ...]) -> list[DateText]:
                     continue
                 seen.add(key)
                 kept.append(parsed)
+            if len(kept) == 2 and _A_SPAN.search(
+                normalize_digits(text)[kept[0].end:kept[1].start]
+            ):
+                # "از 6 مهر تا 30 مهر" is one tour open across a window, not two
+                # departures. Read as two, its first half expires while the tour
+                # is still on sale and the page comes back holding half of what
+                # it shows. The window's end is the departure, the same day a
+                # stated month is sent as.
+                return [kept[1]]
             if kept:
                 return kept
     # No day anywhere: a month or season alone still tells availability when the tour ends.
