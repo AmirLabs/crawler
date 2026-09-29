@@ -6,19 +6,27 @@
 # its other departure dates, and what did each one carry?
 #
 #     .venv/bin/python tests/check_one_url.py https://bisanseir.com/tour/تور-کیش-کاسپین
-#     .venv/bin/python tests/check_one_url.py <url> --out logs/one.json
 #     .venv/bin/python tests/check_one_url.py <url> --full
-#     .venv/bin/python tests/check_one_url.py <url> --dump logs/one
+#     .venv/bin/python tests/check_one_url.py <url> --name kusadasi
+#     .venv/bin/python tests/check_one_url.py <url> --dump
+#
+# Both structures are always written, one file each, under logs/check/<name>,
+# so a change can be looked at rather than described:
+#
+#     logs/check/<name>/first_structure.json
+#     logs/check/<name>/second_structure.json
 
 from __future__ import annotations
 
 import argparse
 import asyncio
 import json
+import re
 import sys
 from collections import Counter
 from pathlib import Path
-from urllib.parse import urlsplit
+from typing import Optional
+from urllib.parse import unquote, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -33,10 +41,20 @@ from crawler.storage.database import Database
 
 TIMEOUT = 45.0
 
+CHECKS = Path(__file__).resolve().parent.parent / "logs" / "check"
+
 
 def site_name(url: str) -> str:
     host = urlsplit(url).netloc
     return host.replace("www.", "").split(".")[0]
+
+
+def folder_for(url: str, name: Optional[str]) -> Path:
+    """Where this check writes, named after the tour unless a name was given."""
+    if not name:
+        parts = [part for part in unquote(urlsplit(url).path).split("/") if part]
+        name = (parts[-1] if parts else urlsplit(url).netloc)[:60]
+    return CHECKS / re.sub(r"[^\w.\-]+", "-", name).strip("-")
 
 
 def money(package: dict) -> str:
@@ -47,7 +65,7 @@ def money(package: dict) -> str:
     return f"{foreign:,.0f} ارز" if foreign > 0 else "—"
 
 
-async def check(url: str, out: Path | None, full: bool, dump: Path | None) -> int:
+async def check(url: str, name: Optional[str], full: bool, dump: bool) -> int:
     profile = await profile_site(urlsplit(url).netloc, render=False)
     if not profile.reachable:
         print(f"unreachable: {profile.error}")
@@ -71,16 +89,17 @@ async def check(url: str, out: Path | None, full: bool, dump: Path | None) -> in
     for (raw, source), count in where.most_common(8):
         print(f"   {count:>4}  {str(raw):18} {source}")
 
+    out = folder_for(url, name)
+    out.mkdir(parents=True, exist_ok=True)
     if dump:
-        dump.mkdir(parents=True, exist_ok=True)
-        (dump / "page.html").write_text(page.html_raw or "", encoding="utf-8")
-        (dump / "embedded.json").write_text(
+        (out / "page.html").write_text(page.html_raw or "", encoding="utf-8")
+        (out / "embedded.json").write_text(
             json.dumps(page.embedded_json, ensure_ascii=False, indent=2), encoding="utf-8")
-        (dump / "rows.json").write_text(
-            json.dumps([{name: field.value for name, field in row.fields.items()}
+        (out / "rows.json").write_text(
+            json.dumps([{key: field.value for key, field in row.fields.items()}
                         for row in page.rows], ensure_ascii=False, indent=2),
             encoding="utf-8")
-        print(f"\n   dumped page.html, embedded.json and rows.json to {dump}")
+        print(f"\n   dumped page.html, embedded.json and rows.json")
 
     db = Database(path=None)
     db.start_run()
@@ -117,15 +136,13 @@ async def check(url: str, out: Path | None, full: bool, dump: Path | None) -> in
         for group in links[:10]:
             print(f"   {group.primary}")
 
-    if out:
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(
-            json.dumps({"first_structure": first, "second_structure": second},
-                       ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        print()
-        print(f"written to {out}")
+    for stem, records in (("first_structure", first), ("second_structure", second)):
+        (out / f"{stem}.json").write_text(
+            json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+    print()
+    print(f"written to {out}")
+    print(f"   first_structure.json    {len(first)} packages")
+    print(f"   second_structure.json   {len(second)} tours")
     db.close()
     return 0
 
@@ -133,12 +150,12 @@ async def check(url: str, out: Path | None, full: bool, dump: Path | None) -> in
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("url", help="one tour page")
-    parser.add_argument("--out", type=Path, help="write both structures here as JSON")
+    parser.add_argument("--name", help="folder name under logs/check, else the tour slug")
     parser.add_argument("--full", action="store_true", help="print every package")
-    parser.add_argument("--dump", type=Path,
-                        help="write the page, its embedded JSON and its rows here")
+    parser.add_argument("--dump", action="store_true",
+                        help="also write the page, its embedded JSON and its rows")
     args = parser.parse_args()
-    return asyncio.run(check(args.url, args.out, args.full, args.dump))
+    return asyncio.run(check(args.url, args.name, args.full, args.dump))
 
 
 if __name__ == "__main__":
