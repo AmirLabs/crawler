@@ -291,7 +291,7 @@ class HotelBlock:
 
     Example:
         >>> HotelBlock(name="The Train Resort", board_type="BB", path="div.hotel")
-        HotelBlock(name='The Train Resort', star_rating=None, board_type='BB', boards=(), nights=None, image_url=None, path='div.hotel')
+        HotelBlock(name='The Train Resort', star_rating=None, board_type='BB', boards=(), stars=(), each_nights=(), cities=(), nights=None, image_url=None, path='div.hotel')
     """
 
     name: Optional[str] = None
@@ -300,6 +300,11 @@ class HotelBlock:
     # One board per name, where the block gives each hotel its own. Empty where
     # it states a single board for the stay, which is the common case.
     boards: tuple[Optional[str], ...] = ()
+    # The star and the nights of each of those names, where the block prints
+    # one against each hotel rather than one for the whole stay.
+    stars: tuple[Optional[int], ...] = ()
+    each_nights: tuple[Optional[int], ...] = ()
+    cities: tuple[Optional[str], ...] = ()
     nights: Optional[int] = None
     image_url: Optional[str] = None
     path: Optional[str] = None
@@ -579,21 +584,48 @@ def read_hotel_block(container: RowContainer) -> HotelBlock:
     # and giving the stay one board sent the second hotel's as the first's and
     # left the rest empty.
     boards: list[Optional[str]] = []
+    # The same, for what else a multi-city block prints against each hotel.
+    stars: list[Optional[int]] = []
+    each_nights: list[Optional[int]] = []
+    # Where each of them stands. A card that names its hotels in one element
+    # writes the city in another — nahalgasht prints "دوشنبه" and "پنجکنت"
+    # beside the hotels of a Tajikistan tour — and that is the only place the
+    # city of a stay that moves is stated at all.
+    cities: list[Optional[str]] = []
+    # A block lists its hotels in one kind of element, so a name printed in a
+    # different one is something else that reads like a name. nahalgasht writes
+    # each hotel in a <p> and the city it stands in in a <span> beside it, and
+    # the cities were coming out as hotels of their own.
+    hotel_tag: Optional[str] = None
     open_run = False
     for node in block.css("*"):
         own = _clean(node.text(deep=False))
         if not own or own not in extra:
             continue  # belongs to a row, not to the block
-        if not _looks_like_a_name(own):
-            open_run = False
-            found = detect_board_type(own)
-            if found and names and boards[-1] is None:
-                boards[-1] = found
+        a_name = _looks_like_a_name(own)
+        if a_name and hotel_tag is None:
+            hotel_tag = node.tag
+        if a_name and node.tag == hotel_tag:
+            if not open_run and name_only(own) not in names:
+                names.append(name_only(own))
+                boards.append(None)
+                stars.append(None)
+                each_nights.append(None)
+                cities.append(None)
+            open_run = True
             continue
-        if not open_run and name_only(own) not in names:
-            names.append(name_only(own))
-            boards.append(None)
-        open_run = True
+        if not a_name:
+            open_run = False
+        if not names:
+            continue
+        if boards[-1] is None:
+            boards[-1] = detect_board_type(own)
+        if stars[-1] is None:
+            stars[-1] = detect_star_rating(own)
+        if each_nights[-1] is None:
+            each_nights[-1] = detect_nights(own)
+        if a_name and cities[-1] is None and detect_nights(own) is None:
+            cities[-1] = own
     name = " + ".join(names) if names else None
 
     # The name must come from the block itself, but a rating or a board code
@@ -605,6 +637,9 @@ def read_hotel_block(container: RowContainer) -> HotelBlock:
         star_rating=detect_star_rating(around) or rating_in_attributes(block),
         board_type=detect_board_type(around),
         boards=tuple(boards) if any(boards) else (),
+        stars=tuple(stars) if len(names) > 1 and any(stars) else (),
+        each_nights=tuple(each_nights) if len(names) > 1 and any(each_nights) else (),
+        cities=tuple(cities) if any(cities) else (),
         nights=detect_nights(around),
         image_url=image_in_block(block),
         path=_element_path(block),

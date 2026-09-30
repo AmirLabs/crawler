@@ -417,6 +417,48 @@ def score_row_container(
     return container.score
 
 
+# How far a list may be read around before the page is being read instead. Six
+# levels reaches the card a tour page wraps its offers in on every site here.
+_ALONE_LEVELS = 6
+
+
+def _list_alone(container: RowContainer) -> str:
+    """The most the page says around this list and around no other like it.
+
+    The members' own text is not enough to tell two lists apart. nahalgasht
+    sells a tour of three cities as one card per set of hotels, and two cards
+    that differ in a single hotel print the same rooms at the same prices — so
+    both cards read as one list and a real package was dropped. What is beside
+    the list says which one it is.
+
+    Climbing stops at the level that first holds a second copy of the same
+    text, so a mobile and a desktop copy of one list still end on their own
+    wrapper and still read alike.
+
+    Example:
+        >>> tree = HTMLParser(
+        ...     '<div class="card"><p>Hotel A</p><div class="beds">'
+        ...     '<div class="bed">دو تخته 92,000,000 تومان</div>'
+        ...     '<div class="bed">یک تخته 99,000,000 تومان</div>'
+        ...     '</div></div>'
+        ... )
+        >>> "HotelA" in _list_alone(find_row_containers(tree)[0])
+        True
+    """
+    mine = "".join("".join(text.split()) for text in container.texts())
+    node = container.members[0].parent if container.members else None
+    widest = ""
+    for _ in range(_ALONE_LEVELS):
+        if node is None:
+            break
+        whole = "".join((node.text(deep=True) or "").split())
+        if whole.count(mine) != 1:
+            break
+        widest = whole
+        node = node.parent
+    return widest
+
+
 def find_row_containers(
     tree: HTMLParser | Node, page_url: Optional[str] = None
 ) -> list[RowContainer]:
@@ -484,13 +526,12 @@ def find_row_containers(
     for container in found:
         score_row_container(container, page_url=page_url)
 
-    # Drop duplicates: same members' text means the same list, however it was
-    # reached. Keeps the mobile and desktop copies of one list from both
-    # counting as offers.
+    # Drop duplicates: the same list, however it was reached. Keeps the mobile
+    # and desktop copies of one list from both counting as offers.
     unique: list[RowContainer] = []
-    seen: set[tuple[str, ...]] = set()
+    seen: set[tuple[str, str]] = set()
     for container in sorted(found, key=lambda c: (-c.score, -c.with_price, -c.count)):
-        fingerprint = tuple(container.texts())
+        fingerprint = ("".join(container.texts()), _list_alone(container))
         if fingerprint in seen:
             continue
         seen.add(fingerprint)

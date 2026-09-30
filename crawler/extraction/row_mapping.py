@@ -105,6 +105,9 @@ _BLOCK_FIELDS: tuple[tuple[str, str], ...] = (
     # board_type rather than instead of it: the single value is what a row of
     # one hotel wants, and every site but this one states only that.
     ("boards", "board_types"),
+    ("stars", "hotel_stars"),
+    ("each_nights", "hotel_nights"),
+    ("cities", "hotel_cities"),
     ("nights", "nights"),
     ("image_url", "hotel_image"),
 )

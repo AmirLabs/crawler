@@ -384,6 +384,9 @@ def _hotels_named(
     nights: Optional[int],
     image_url: Optional[Any] = None,
     boards: Optional[Any] = None,
+    stars: Optional[Any] = None,
+    each_nights: Optional[Any] = None,
+    cities: Optional[Any] = None,
 ) -> list[Hotel]:
     """One hotel per hotel, out of the one string the markup path joins them into.
 
@@ -393,14 +396,13 @@ def _hotels_named(
     name loses every one of them: lachinseir's Asia tour arrived as a single
     hotel called "IMPIANA HOTEL + MERCURE MAKKASAN + AYUNG RESORT + MAMAKA".
 
-    The grade, the nights and the picture are not split with the name. They were
-    read once for the stay and there is nothing in the markup saying which hotel
-    each belongs to, so they stay on the first and the rest carry only what the
-    page actually named.
+    The picture is not split with the name. It was read once for the stay and
+    there is nothing in the markup saying which hotel it belongs to, so it
+    stays on the first and the rest carry only what the page actually named.
 
-    The board is split where the page did state one per hotel — lachinseir
-    prints "Seven Sea Hotel B.B" and "Bhaya halong cruises F.B" — and otherwise
-    behaves like the rest.
+    The board, the grade and the nights are split where the page did state one
+    per hotel — nahalgasht prints "هتل پنجکنت پلازا 3 ستاره ... - 2 شب" under
+    the hotel above it — and otherwise behave like the picture.
 
     Example:
         >>> [h.name for h in _hotels_named("A + B", None, 4, "BB", 6)]
@@ -412,6 +414,12 @@ def _hotels_named(
         >>> [h.board_type for h in _hotels_named("A + B + C", None, None, "BB", 6,
         ...                                      boards=("BB", "BB", "FB"))]
         ['BB', 'BB', 'FB']
+        >>> [(h.star_rating, h.nights) for h in _hotels_named("A + B", None, 4, None, 6,
+        ...                                 stars=(4, 3), each_nights=(3, 2))]
+        [(4, 3), (3, 2)]
+        >>> [h.city for h in _hotels_named("A + B", None, None, None, 6,
+        ...                                cities=("Dushanbe", "Panjakent"))]
+        ['Dushanbe', 'Panjakent']
         >>> [h.name for h in _hotels_named("Kemer Star Hotel", None, None, None, 3)]
         ['Kemer Star Hotel']
         >>> _hotels_named("A + B", None, None, None, 3,
@@ -424,14 +432,47 @@ def _hotels_named(
         return [Hotel(name=name, city=city, star_rating=star_rating,
                       board_type=board_type, nights=nights,
                       image_url=image_url)]
-    per_hotel = list(boards) if boards else []
-    return [Hotel(name=parts[0], city=city, star_rating=star_rating,
-                  board_type=(per_hotel[0] if per_hotel else board_type),
-                  nights=nights, image_url=image_url)] + [
+    def each(values: Optional[Any], index: int) -> Optional[Any]:
+        listed = list(values) if values else []
+        return listed[index] if index < len(listed) else None
+
+    return [Hotel(name=parts[0], city=each(cities, 0) or city,
+                  star_rating=each(stars, 0) or star_rating,
+                  board_type=each(boards, 0) or board_type,
+                  nights=each(each_nights, 0) or nights,
+                  image_url=image_url)] + [
         Hotel(name=part,
-              board_type=per_hotel[index] if index < len(per_hotel) else None)
+              city=each(cities, index),
+              star_rating=each(stars, index),
+              board_type=each(boards, index),
+              nights=each(each_nights, index))
         for index, part in enumerate(parts[1:], start=1)
     ]
+
+
+def _nights_of_every_hotel(each: Optional[Any]) -> Optional[int]:
+    """The nights of a stay that moves city: every hotel's, added up.
+
+    The flat ``nights`` field holds what was read once for the block, which on
+    a multi-city card is the first hotel alone — nahalgasht sold "7 شب و 8 روز"
+    to Kuala Lumpur and Singapore as 4 nights, because its first hotel is
+    4 nights and its second is 3. Only counted where the page stated one
+    against each hotel; a single figure for the stay is left as it is.
+
+    Example:
+        >>> _nights_of_every_hotel((4, 3))
+        7
+        >>> _nights_of_every_hotel((4,)) is None
+        True
+        >>> _nights_of_every_hotel(None) is None
+        True
+        >>> _nights_of_every_hotel((4, None))
+        4
+    """
+    if not isinstance(each, (list, tuple)) or len(each) < 2:
+        return None
+    counted = [value for value in each if isinstance(value, int)]
+    return sum(counted) or None
 
 
 def _build_offer(
@@ -464,7 +505,8 @@ def _build_offer(
     departure = _tour_date(_value(first, "departure_date"))
     ret = _tour_date(_value(first, "return_date"))
     nights = (
-        _value(first, "nights")
+        _nights_of_every_hotel(_value(first, "hotel_nights"))
+        or _value(first, "nights")
         or nights_from_name
         or _nights_between(departure, ret)
     )
@@ -500,6 +542,9 @@ def _build_offer(
             nights=nights,
             image_url=_value(first, "hotel_image"),
             boards=_value(first, "board_types"),
+            stars=_value(first, "hotel_stars"),
+            each_nights=_value(first, "hotel_nights"),
+            cities=_value(first, "hotel_cities"),
         )
 
     transport_name = _value(first, "transport_name")
