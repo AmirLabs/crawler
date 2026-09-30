@@ -243,6 +243,39 @@ def _first_date_before(
     return None, -1
 
 
+def _departures_before(text: str, at: int, last: DateText) -> list[DateText]:
+    """Every departure printed just *before* a caption, in page order.
+
+    The mirror of :func:`_departures_after`, for the pages that name the value
+    after showing it. lachinseir writes "10 شب و 11 روز ویژه 29 آذر الی 9 دی
+    (شروع تور / مسیر رفت)", so looking forward from the caption finds nothing
+    and the tour came back holding one end of its own span.
+
+    The window is measured back from the date itself and not from the caption,
+    which may sit well beyond it: the caption of that tour is 58 characters
+    past "9 دی", so a window of the usual depth anchored there began after
+    "29 آذر" and the span lost its opening end.
+
+    Example:
+        >>> text = "ویژه 29 آذر الی 9 دی (شروع تور / مسیر رفت)"
+        >>> found = find_dates(text)
+        >>> [(d.day, d.month) for d in _departures_before(text, text.find("شروع"), found[-1])]
+        [(29, 9), (9, 10)]
+    """
+    here = text.find(last.raw)
+    back = (here if here >= 0 else at) - _BACK_WINDOW
+    window = text[max(0, back): at]
+    seen: set[tuple] = set()
+    departures: list[DateText] = []
+    for parsed in [*find_dates(window), last]:
+        key = (parsed.day, parsed.month, parsed.year)
+        if parsed.day is None or key in seen:
+            continue
+        seen.add(key)
+        departures.append(parsed)
+    return departures or [last]
+
+
 def _departures_after(text: str, at: int, first: DateText) -> list[DateText]:
     """Every departure printed with ``first``, deduplicated, in page order.
 
@@ -257,11 +290,12 @@ def _departures_after(text: str, at: int, first: DateText) -> list[DateText]:
         >>> [(d.day, d.month) for d in _departures_after(text, 0, found[0])]
         [(25, 4), (12, 5), (29, 5), (19, 6)]
 
-        A window is one departure, on the day it closes:
+        Both ends of a window come back; which of them is the departure is
+        settled by :func:`_settle_span`, once the tour's length is known:
 
         >>> span = "تاریخ رفت از 6 مهر تا 30 مهر"
         >>> [(d.day, d.month) for d in _departures_after(span, 0, find_dates(span)[0])]
-        [(30, 7)]
+        [(6, 7), (30, 7)]
     """
     window = text[at: at + _LABEL_WINDOW]
     for caption in _RETURN_CAPTIONS:
@@ -277,13 +311,6 @@ def _departures_after(text: str, at: int, first: DateText) -> list[DateText]:
             continue
         seen.add(key)
         departures.append(parsed)
-    if len(departures) == 2 and _A_SPAN.search(
-        window[departures[0].end: departures[1].start]
-    ):
-        # "از 6 مهر تا 30 مهر" is one tour open across a window, not two
-        # departures. Read as two, its first half expires while the tour is
-        # still on sale and the page comes back holding half of what it shows.
-        return [departures[1]]
     return departures or [first]
 
 
@@ -315,7 +342,8 @@ def read_dates(text: str) -> tuple[list[DateText], Optional[DateText]]:
     if departure is None:
         return [], None
 
-    departures = _departures_after(text, at, departure)
+    departures = (_departures_before(text, at, departure) if behind
+                  else _departures_after(text, at, departure))
 
     # The return has to be labelled, and has to come after the departure.
     after = text[at:] if behind else text[at + departure.end:]
@@ -380,15 +408,6 @@ def _caption_value(node, captions: tuple[re.Pattern, ...]) -> list[DateText]:
                     continue
                 seen.add(key)
                 kept.append(parsed)
-            if len(kept) == 2 and _A_SPAN.search(
-                normalize_digits(text)[kept[0].end:kept[1].start]
-            ):
-                # "از 6 مهر تا 30 مهر" is one tour open across a window, not two
-                # departures. Read as two, its first half expires while the tour
-                # is still on sale and the page comes back holding half of what
-                # it shows. The window's end is the departure, the same day a
-                # stated month is sent as.
-                return [kept[1]]
             if kept:
                 return kept
     # No day anywhere: a month or season alone still tells availability when the tour ends.
@@ -761,6 +780,119 @@ def _derive_return(
     return derived
 
 
+def _nights_beside_the_title(html: str) -> Optional[int]:
+    """How long the tour is, where it is printed beside the page's own title.
+
+    The companion of :func:`_period_beside_the_title`, for the same pages and
+    the same reason: lachinseir labels nothing and leaves its ``<title>`` empty,
+    but prints "9 شب و 10 روز" in a span of its own next to the name.
+
+    Read from that block and nowhere else. Looking for the length around the
+    departure instead found "هزینه پرواز در تاریخ 3 مهر" — a note far down the
+    page that happens to repeat a departure — and answered nothing.
+
+    Example:
+        >>> html = ('<div><h1>تور ویتنام</h1><span>9 شب و 10 روز</span>'
+        ...         '<span>ویژه 3، 12 مهر</span></div>')
+        >>> _nights_beside_the_title(html)
+        9
+        >>> _nights_beside_the_title('<div><h1>تور ویتنام</h1></div>') is None
+        True
+    """
+    title = HTMLParser(html).css_first("h1")
+    block = title.parent if title is not None else None
+    if block is None:
+        return None
+    for node in block.css("*"):
+        found = detect_nights(_clean(node.text(deep=False)))
+        if found is not None:
+            return found
+    return None
+
+
+def _period_beside_the_title(html: str) -> list[DateText]:
+    """The month or season printed beside the page's own title, if one is.
+
+    A last resort, for the pages that label nothing. lachinseir puts the tour's
+    name, its length and its months in three spans of one block, with no
+    caption anywhere:
+
+        <h1>تور بالی ( ساحلی + جنگلی )</h1>
+        <span>7 شب و 8 روز</span>
+        <span>ویژه مهر و آبان</span>
+
+    Only an element whose whole text is a period counts, which is what keeps
+    the tour's own name out of it: :func:`find_periods` is anchored, so
+    "تور بالی ( ساحلی + جنگلی )" and "7 شب و 8 روز" both answer nothing.
+
+    Example:
+        >>> html = ('<div><h1>تور بالی</h1><span>7 شب و 8 روز</span>'
+        ...         '<span>ویژه مهر و آبان</span></div>')
+        >>> [(d.raw, d.month) for d in _period_beside_the_title(html)]
+        [('ویژه مهر', 7), ('آبان', 8)]
+        >>> _period_beside_the_title('<div><h1>تور بالی</h1><p>تور ما</p></div>')
+        []
+    """
+    title = HTMLParser(html).css_first("h1")
+    block = title.parent if title is not None else None
+    if block is None:
+        return []
+    for node in block.css("*"):
+        found = find_periods(_clean(node.text(deep=False)))
+        if found:
+            return found
+    return []
+
+
+def _settle_span(
+    departures: list[DateText], returning: Optional[DateText],
+    nights: Optional[int], text: str,
+) -> tuple[list[DateText], Optional[DateText]]:
+    """Decide what two dates joined by "تا" or "الی" are: a trip, or a window.
+
+    Both are written the same way and only the length tells them apart. When
+    the two dates are exactly as far apart as the tour is long, they are its
+    own two ends — lachinseir's "10 شب و 11 روز ویژه 29 آذر الی 9 دی" leaves on
+    29 آذر and comes back on 9 دی. When they are not, the page is naming the
+    stretch a fixed-length tour is on sale across — nahalgasht's "از 6 مهر تا
+    30 مهر" is a three-night tour sold over 25 days — and the day the window
+    shuts is the departure, the same day a stated month is sent as.
+
+    Unknown length is read as a window, which is what the client asked for
+    where nothing tells us otherwise.
+
+    Example:
+        >>> out, back = _settle_span(find_dates("29 آذر الی 9 دی"), None, 10,
+        ...                          "10 شب و 11 روز ویژه 29 آذر الی 9 دی")
+        >>> out[0].raw, back.raw
+        ('29 آذر', '9 دی')
+        >>> out, back = _settle_span(find_dates("6 مهر تا 30 مهر"), None, 2,
+        ...                          "2 شب از 6 مهر تا 30 مهر")
+        >>> [d.raw for d in out], back
+        (['30 مهر'], None)
+        >>> out, _ = _settle_span(find_dates("6 مهر تا 30 مهر"), None, None,
+        ...                       "از 6 مهر تا 30 مهر")
+        >>> [d.raw for d in out]
+        ['30 مهر']
+    """
+    if len(departures) != 2:
+        return departures, returning
+    first, second = departures
+    between = normalize_digits(text)
+    at = between.find(first.raw)
+    to = between.find(second.raw, at + len(first.raw)) if at >= 0 else -1
+    if at < 0 or to < 0 or not _A_SPAN.search(between[at + len(first.raw): to]):
+        return departures, returning
+
+    if nights is not None:
+        out, back = to_iso(first), to_iso(second)
+        if out and back:
+            span = (date.fromisoformat(back) - date.fromisoformat(out)).days + 1
+            if abs(span - (nights + 1)) <= 1:
+                return [first], second
+    return [second], returning
+
+
 def read_page_facts(html: str) -> PageFacts:
     """Everything a page states once, for the rows that state nothing.
 
@@ -776,6 +908,8 @@ def read_page_facts(html: str) -> PageFacts:
     """
     text = main_text(html)
     departures, returning = read_dates(text)
+    if not departures:
+        departures = _period_beside_the_title(html)
     if not departures or all(one.day is None for one in departures):
         # A departure with no day is a month, and a month is read better from
         # the markup: running text ends the value wherever the layout did, so
@@ -787,6 +921,9 @@ def read_page_facts(html: str) -> PageFacts:
     nights = _labelled(text, _NIGHT_LABELS, detect_nights, _LABEL_VALUE_WINDOW)
     if nights is None:
         nights = title_nights(html)
+    if nights is None:
+        nights = _nights_beside_the_title(html)
+    departures, returning = _settle_span(departures, returning, nights, text)
     if returning is None:
         returning = _derive_return(departures[0] if departures else None, nights)
 
