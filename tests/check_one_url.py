@@ -50,10 +50,27 @@ def site_name(url: str) -> str:
 
 
 def folder_for(url: str, name: Optional[str]) -> Path:
-    """Where this check writes, named after the tour unless a name was given."""
+    """Where this check writes, named after the tour unless a name was given.
+
+    The query counts. lachinseir keeps the tour in it — tour.bc?lid=1&id=2361574
+    — so a name taken from the path alone would write every one of its tours
+    over the last.
+
+    Example:
+        >>> folder_for("https://x.com/tour/50082-izmir/", None).name
+        '50082-izmir'
+        >>> folder_for("https://x.com/tour.bc?lid=1&id=2361574", None).name
+        'tour.bc-lid-1-id-2361574'
+        >>> folder_for("https://x.com/tour/1", "mine").name
+        'mine'
+    """
     if not name:
-        parts = [part for part in unquote(urlsplit(url).path).split("/") if part]
-        name = (parts[-1] if parts else urlsplit(url).netloc)[:60]
+        parsed = urlsplit(url)
+        parts = [part for part in unquote(parsed.path).split("/") if part]
+        name = (parts[-1] if parts else parsed.netloc)
+        if parsed.query:
+            name += "-" + unquote(parsed.query)
+        name = name[:60]
     return CHECKS / re.sub(r"[^\w.\-]+", "-", name).strip("-")
 
 
