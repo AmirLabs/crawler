@@ -8,6 +8,7 @@
 #
 #     .venv/bin/python tests/recrawl_site.py --site bisanseir
 #     .venv/bin/python tests/recrawl_site.py --site bisanseir --workers 4
+#     .venv/bin/python tests/recrawl_site.py --site nahalgasht --limit 100 --spread
 #     .venv/bin/python tests/recrawl_site.py --site vanrosh --limit 20
 #     .venv/bin/python tests/recrawl_site.py --site bisanseir --db /tmp/copy.db
 
@@ -46,11 +47,31 @@ def known_urls(db: Database, site: str) -> list[str]:
     ))
 
 
+def _thinned(urls: list[str], wanted: int) -> list[str]:
+    """``wanted`` URLs taken evenly across the list, in its own order.
+
+    The pages table is sorted by address, so the first hundred of nahalgasht's
+    1,767 are all one corner of the site. Stepping through it instead samples
+    the whole of it, which is what a check of a rule needs.
+
+    Example:
+        >>> _thinned(["a", "b", "c", "d", "e", "f"], 3)
+        ['a', 'c', 'e']
+        >>> _thinned(["a", "b"], 5)
+        ['a', 'b']
+    """
+    if wanted >= len(urls):
+        return urls
+    step = len(urls) / wanted
+    return [urls[int(index * step)] for index in range(wanted)]
+
+
 def site_name(url: str) -> str:
     return urlsplit(url).netloc.replace("www.", "").split(".")[0]
 
 
-async def recrawl(site: str, path: Path, limit: Optional[int], workers: int) -> int:
+async def recrawl(site: str, path: Path, limit: Optional[int], workers: int,
+                  spread: bool) -> int:
     db = Database(path)
     urls = known_urls(db, site)
     if not urls:
@@ -58,7 +79,7 @@ async def recrawl(site: str, path: Path, limit: Optional[int], workers: int) -> 
         db.close()
         return 1
     if limit:
-        urls = urls[:limit]
+        urls = _thinned(urls, limit) if spread else urls[:limit]
 
     print(f"{len(urls)} known URLs for {site!r} in {path}, {workers} at a time")
     profile = await profile_site(urlsplit(urls[0]).netloc, render=False)
@@ -158,8 +179,11 @@ def main() -> int:
     parser.add_argument("--limit", type=int, help="stop after this many known URLs")
     parser.add_argument("--workers", type=int, default=1,
                         help="how many pages to read at once")
+    parser.add_argument("--spread", action="store_true",
+                        help="with --limit, sample across the site rather than its first URLs")
     args = parser.parse_args()
-    return asyncio.run(recrawl(args.site, args.db, args.limit, max(1, args.workers)))
+    return asyncio.run(recrawl(args.site, args.db, args.limit,
+                               max(1, args.workers), args.spread))
 
 
 if __name__ == "__main__":
