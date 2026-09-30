@@ -291,12 +291,15 @@ class HotelBlock:
 
     Example:
         >>> HotelBlock(name="The Train Resort", board_type="BB", path="div.hotel")
-        HotelBlock(name='The Train Resort', star_rating=None, board_type='BB', nights=None, image_url=None, path='div.hotel')
+        HotelBlock(name='The Train Resort', star_rating=None, board_type='BB', boards=(), nights=None, image_url=None, path='div.hotel')
     """
 
     name: Optional[str] = None
     star_rating: Optional[int] = None
     board_type: Optional[str] = None
+    # One board per name, where the block gives each hotel its own. Empty where
+    # it states a single board for the stay, which is the common case.
+    boards: tuple[Optional[str], ...] = ()
     nights: Optional[int] = None
     image_url: Optional[str] = None
     path: Optional[str] = None
@@ -571,6 +574,11 @@ def read_hotel_block(container: RowContainer) -> HotelBlock:
     # real second hotels with their own labels. So a name only counts as a new
     # hotel when something that is not a name came between.
     names: list[str] = []
+    # The board each of those names was followed by. lachinseir prints one per
+    # hotel — "Seven Sea Hotel Da nang B.B", then "Bhaya halong cruises F.B" —
+    # and giving the stay one board sent the second hotel's as the first's and
+    # left the rest empty.
+    boards: list[Optional[str]] = []
     open_run = False
     for node in block.css("*"):
         own = _clean(node.text(deep=False))
@@ -578,9 +586,13 @@ def read_hotel_block(container: RowContainer) -> HotelBlock:
             continue  # belongs to a row, not to the block
         if not _looks_like_a_name(own):
             open_run = False
+            found = detect_board_type(own)
+            if found and names and boards[-1] is None:
+                boards[-1] = found
             continue
         if not open_run and name_only(own) not in names:
             names.append(name_only(own))
+            boards.append(None)
         open_run = True
     name = " + ".join(names) if names else None
 
@@ -592,6 +604,7 @@ def read_hotel_block(container: RowContainer) -> HotelBlock:
         name=name,
         star_rating=detect_star_rating(around) or rating_in_attributes(block),
         board_type=detect_board_type(around),
+        boards=tuple(boards) if any(boards) else (),
         nights=detect_nights(around),
         image_url=image_in_block(block),
         path=_element_path(block),

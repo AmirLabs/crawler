@@ -101,6 +101,10 @@ _BLOCK_FIELDS: tuple[tuple[str, str], ...] = (
     ("name", "hotel_name"),
     ("star_rating", "hotel_star_rating"),
     ("board_type", "board_type"),
+    # One board per hotel, where the block named them separately. Kept beside
+    # board_type rather than instead of it: the single value is what a row of
+    # one hotel wants, and every site but this one states only that.
+    ("boards", "board_types"),
     ("nights", "nights"),
     ("image_url", "hotel_image"),
 )
@@ -338,7 +342,7 @@ def _apply_hotel_block(row: ExtractedRow, block: HotelBlock) -> None:
     """
     for attribute, field_name in _BLOCK_FIELDS:
         value = getattr(block, attribute)
-        if value is None or field_name in row.fields:
+        if value is None or value == () or field_name in row.fields:
             continue
         row.fields[field_name] = ExtractedField(
             value=value,

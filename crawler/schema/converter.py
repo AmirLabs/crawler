@@ -383,6 +383,7 @@ def _hotels_named(
     board_type: Optional[Any],
     nights: Optional[int],
     image_url: Optional[Any] = None,
+    boards: Optional[Any] = None,
 ) -> list[Hotel]:
     """One hotel per hotel, out of the one string the markup path joins them into.
 
@@ -392,16 +393,25 @@ def _hotels_named(
     name loses every one of them: lachinseir's Asia tour arrived as a single
     hotel called "IMPIANA HOTEL + MERCURE MAKKASAN + AYUNG RESORT + MAMAKA".
 
-    The grade, the board, the nights and the picture are not split with the
-    name. They were read once for the stay and there is nothing in the markup
-    saying which hotel each belongs to, so they stay on the first and the rest
-    carry only what the page actually named.
+    The grade, the nights and the picture are not split with the name. They were
+    read once for the stay and there is nothing in the markup saying which hotel
+    each belongs to, so they stay on the first and the rest carry only what the
+    page actually named.
+
+    The board is split where the page did state one per hotel — lachinseir
+    prints "Seven Sea Hotel B.B" and "Bhaya halong cruises F.B" — and otherwise
+    behaves like the rest.
 
     Example:
         >>> [h.name for h in _hotels_named("A + B", None, 4, "BB", 6)]
         ['A', 'B']
         >>> [(h.star_rating, h.nights) for h in _hotels_named("A + B", None, 4, "BB", 6)]
         [(4, 6), (None, None)]
+        >>> [h.board_type for h in _hotels_named("A + B", None, None, "BB", 6)]
+        ['BB', None]
+        >>> [h.board_type for h in _hotels_named("A + B + C", None, None, "BB", 6,
+        ...                                      boards=("BB", "BB", "FB"))]
+        ['BB', 'BB', 'FB']
         >>> [h.name for h in _hotels_named("Kemer Star Hotel", None, None, None, 3)]
         ['Kemer Star Hotel']
         >>> _hotels_named("A + B", None, None, None, 3,
@@ -414,10 +424,13 @@ def _hotels_named(
         return [Hotel(name=name, city=city, star_rating=star_rating,
                       board_type=board_type, nights=nights,
                       image_url=image_url)]
+    per_hotel = list(boards) if boards else []
     return [Hotel(name=parts[0], city=city, star_rating=star_rating,
-                  board_type=board_type, nights=nights,
-                  image_url=image_url)] + [
-        Hotel(name=part) for part in parts[1:]
+                  board_type=(per_hotel[0] if per_hotel else board_type),
+                  nights=nights, image_url=image_url)] + [
+        Hotel(name=part,
+              board_type=per_hotel[index] if index < len(per_hotel) else None)
+        for index, part in enumerate(parts[1:], start=1)
     ]
 
 
@@ -486,6 +499,7 @@ def _build_offer(
             board_type=_value(first, "board_type"),
             nights=nights,
             image_url=_value(first, "hotel_image"),
+            boards=_value(first, "board_types"),
         )
 
     transport_name = _value(first, "transport_name")

@@ -85,6 +85,10 @@ _PRICE_RE = re.compile(
 # separate prices, not one split across currencies.
 _PLUS_BETWEEN = re.compile(r"^[\s‌]*\+[\s‌]*$")
 
+# Nothing at all between the two, which is what a layout leaves when the
+# halves sit in their own elements: "1,130دلار99,000,000تومان".
+_NOTHING_BETWEEN = re.compile(r"^[\s‌]*$")
+
 
 def normalize_digits(text: str) -> str:
     return text.translate(_DIGIT_MAP)
@@ -195,6 +199,37 @@ def _local_first(
     return first, second
 
 
+def _joined(between: str, first: PriceText, second: PriceText) -> bool:
+    """Whether these two printed amounts are the two halves of one price.
+
+    A ``+`` says so outright. So does nothing at all: lachinseir gives each half
+    its own element and the text comes out as "1,130دلار99,000,000تومان", where
+    the dollars ended exactly where the toman began. Two prices that merely
+    follow each other always have something in between — a room type, a hotel
+    name, at least a space — so an empty gap is not something two unrelated
+    amounts produce.
+
+    Even then, only one local half and one foreign half join. Two amounts in
+    the same currency are two prices, whatever sits between them.
+
+    Example:
+        >>> a, b = find_prices("1,130دلار99,000,000تومان")
+        >>> _joined("", a, b)
+        True
+        >>> x, y = find_prices("92,000,000تومان85,000,000تومان")
+        >>> _joined("", x, y)
+        False
+        >>> _joined(" + ", a, b)
+        True
+    """
+    if _PLUS_BETWEEN.match(between):
+        return True
+    if not _NOTHING_BETWEEN.match(between):
+        return False
+    kinds = {first.currency in _LOCAL_CURRENCIES, second.currency in _LOCAL_CURRENCIES}
+    return kinds == {True, False}
+
+
 def pair_dual_currency(
     text: str, prices: list[PriceText]
 ) -> list[tuple[PriceText, Optional[PriceText]]]:
@@ -230,7 +265,7 @@ def pair_dual_currency(
             continue
 
         nxt = prices[i + 1] if i + 1 < len(prices) else None
-        if nxt is not None and _PLUS_BETWEEN.match(text[price.end:nxt.start]):
+        if nxt is not None and _joined(text[price.end:nxt.start], price, nxt):
             pairs.append(_local_first(price, nxt))
             skip_next = True
         else:
