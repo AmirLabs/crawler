@@ -160,7 +160,17 @@ def _with_stragglers(members: list[Node], order: list[Node]) -> list[Node]:
         taken.append(node)
 
     taken += _promoted_row(members[0])
-    taken.sort(key=_document_position)
+    # ``order`` already holds this parent's children in the order the document
+    # writes them, so a place in it is the answer without walking the tree.
+    # Reading it from the root instead cost 59 of the 59 seconds a bisanseir
+    # page took to scan, which is why its pages lost most of their departures:
+    # every date a page links to is a page of its own, and the crawl ran out
+    # of time long before it had read them.
+    place = {id(node): index for index, node in enumerate(order)}
+    if all(id(node) in place for node in taken):
+        taken.sort(key=lambda node: place[id(node)])
+    else:
+        taken.sort(key=_document_position)
     return taken
 
 
