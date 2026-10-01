@@ -22,7 +22,7 @@ import re
 import shutil
 from datetime import date
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from crawler.config import DATA_DIR
@@ -111,12 +111,18 @@ class IdStore:
         self._data["next"][counter] = number + 1
         return number
 
-    def tour_code(self, page_url: str, part: str = "") -> str:
+    def tour_code(self, page_url: str, part: str = "",
+                  family: Sequence[str] = ()) -> str:
         """The code for this tour, minted once and reused for ever after.
 
         ``part`` separates one page that sells several tours. nahalgasht offers
         one page across two months and the client buys each month on its own,
         so each month needs a code of its own.
+
+        ``family`` is every address the tour is also published under, and the
+        first of them is what the code is filed against, so any of them finds
+        it. See :meth:`crawler.storage.database.Database.tour_code`, which is
+        what a crawl uses; this store stands in for it in the examples.
 
         Example:
             >>> store = IdStore(path=None)
@@ -129,11 +135,15 @@ class IdStore:
             >>> store.tour_code("https://x.com/tour/1", "مهر")
             '31540002'
         """
-        key = tour_key(page_url) + (f"|{part}" if part else "")
-        known = self._data["tour_code"].get(key)
+        keys = [tour_key(one) + (f"|{part}" if part else "")
+                for one in (family[:1] or (page_url,))]
+        keys += [tour_key(one) + (f"|{part}" if part else "")
+                 for one in (page_url, *family)]
+        known = next((self._data["tour_code"][k] for k in keys
+                      if k in self._data["tour_code"]), None)
         if known is None:
             known = f"{TOUR_CODE_PREFIX}{self._take('tour'):0{TOUR_CODE_DIGITS}d}"
-            self._data["tour_code"][key] = known
+        self._data["tour_code"][keys[0]] = known
         return known
 
     def fk_tour_id(self, tour_code: str, start_date: str) -> str:

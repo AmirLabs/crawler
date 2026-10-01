@@ -391,6 +391,11 @@ class Tour:
     """One tour page, with every bookable offer found on it."""
 
     tour_url: str
+
+    # The other addresses this tour is sold under, so every one of them is
+    # given the same tour_code. Empty where a tour has one page.
+    family: tuple[str, ...] = ()
+
     tour_name: Optional[str] = None
     origin: Optional[str] = None
     origin_latin: Optional[str] = None  # "tehran"

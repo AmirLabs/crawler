@@ -661,6 +661,7 @@ def build_tour(page: ExtractedPage) -> Tour:
 
     return Tour(
         tour_url=page.url,
+        family=page.family,
         tour_name=tour_name,
         origin=_value(page.page_fields, "origin"),
         origin_latin=_value(page.page_fields, "origin_latin"),

@@ -204,7 +204,10 @@ async def crawl_site(domain: str, pages: int, db: Database) -> dict:
             await asyncio.sleep(POLITE_PAUSE)
             continue
 
-        db.store_tour(db.tour_code(url), first, second)
+        # The code the records carry, not one minted again from the URL: a
+        # tour sold under several addresses is filed against its family, and
+        # asking the URL on its own would mint a second code for the same tour.
+        db.store_tour((first or second)[0]["tour_code"], first, second)
 
         result["first"].extend(first)
         result["second"].extend(second)

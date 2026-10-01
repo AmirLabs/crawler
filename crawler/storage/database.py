@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from datetime import date, datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 from sqlalchemy import create_engine, delete, event, exists, func, select, update
 from sqlalchemy.engine import Engine
@@ -139,12 +139,25 @@ class Database:
         found = self.session.get(TourCode, _code_key(page_url, part))
         return found.code if found else None
 
-    def tour_code(self, page_url: str, part: str = "") -> str:
+    def tour_code(self, page_url: str, part: str = "",
+                  family: Sequence[str] = ()) -> str:
         """The code for this tour, minted once and reused for ever after.
 
         ``part`` separates one page that sells several tours. nahalgasht offers
         one page across two months and the client buys each month on its own,
         so each month needs a code of its own.
+
+        ``family`` is every address the same tour is published under, where a
+        site uses more than one. radingasht gives each departure its own page
+        and each page names all the others, so keyed on the page alone one
+        tour became several, each carrying every date of the family: the same
+        departure reached the client twice, under two codes and at two
+        different prices. One row is kept for the whole family and found from
+        any member, so whichever page is read first, the code is the same.
+
+        Where members already hold codes of their own, the oldest is kept and
+        the rest are forgotten along with what was stored under them. They are
+        written again under the code that stayed, in this same run.
 
         Example:
             >>> db = Database(path=None)
@@ -154,12 +167,68 @@ class Database:
             '31540002'
             >>> db.tour_code("https://x.com/tour/1", "مهر")
             '31540002'
+
+            Two pages of one family share a code, whichever is read first,
+            and a page that joins the family later joins the code:
+
+            >>> both = ("https://x.com/tour/7", "https://x.com/tour/8")
+            >>> db.tour_code("https://x.com/tour/8", family=both)
+            '31540003'
+            >>> db.tour_code("https://x.com/tour/7", family=both)
+            '31540003'
+            >>> db.tour_code("https://x.com/tour/9", family=both + ("https://x.com/tour/9",))
+            '31540003'
+
+            Codes minted apart are merged on the oldest:
+
+            >>> db.tour_code("https://x.com/tour/20"), db.tour_code("https://x.com/tour/21")
+            ('31540004', '31540005')
+            >>> pair = ("https://x.com/tour/20", "https://x.com/tour/21")
+            >>> db.tour_code("https://x.com/tour/21", family=pair)
+            '31540004'
         """
-        known = self.known_tour_code(page_url, part)
-        if known is None:
-            known = f"{TOUR_CODE_PREFIX}{self._take('tour'):0{TOUR_CODE_DIGITS}d}"
-            self.session.add(TourCode(key=_code_key(page_url, part), code=known))
-        return known
+        keys = list(dict.fromkeys(
+            [_code_key(page_url, part)] + [_code_key(one, part) for one in family]
+        ))
+        held = [row for row in (self.session.get(TourCode, key) for key in keys) if row]
+        wanted = _code_key(family[0], part) if family else _code_key(page_url, part)
+
+        if not held:
+            code = f"{TOUR_CODE_PREFIX}{self._take('tour'):0{TOUR_CODE_DIGITS}d}"
+            self.session.add(TourCode(key=wanted, code=code))
+            return code
+
+        kept = min(held, key=lambda row: row.code)
+        for row in held:
+            if row is not kept:
+                self.forget_tour(row.code)
+                self.session.delete(row)
+        if kept.key != wanted:
+            # One row, moved: the member it was filed under may have departed
+            # and left the family, and a code must outlive any one departure.
+            code = kept.code
+            self.session.delete(kept)
+            self.session.flush()
+            self.session.add(TourCode(key=wanted, code=code))
+            return code
+        self.session.flush()
+        return kept.code
+
+    def forget_tour(self, code: str) -> None:
+        """Delete everything stored under one tour code.
+
+        Used when two codes turn out to be one tour. What goes is written
+        again under the code that stayed, so nothing is lost to the client.
+
+        Example:
+            >>> db = Database(path=None); _ = db.start_run()
+            >>> _ = db.store_tour("31540001", [], [{"api_id": "a", "start_date": "1405-08-01"}])
+            >>> db.forget_tour("31540001"); db.catalogue()[1]
+            []
+        """
+        for table in (Package, Tour):
+            for row in self.session.scalars(select(table).where(table.tour_code == code)):
+                self.session.delete(row)
 
     def fk_tour_id(self, tour_code: str, start_date: str) -> str:
         """The id of one tour on one departure date.

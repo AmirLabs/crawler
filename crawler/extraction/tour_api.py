@@ -34,7 +34,7 @@ import json
 import re
 from datetime import date, datetime
 from typing import Any, Optional
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlunparse
 
 import httpx
 
@@ -391,6 +391,45 @@ def _stamp_transport(rows: list[ExtractedRow], outbound: Optional[dict]) -> None
                 row.fields[name] = ExtractedField(value, METHOD_EXACT_KEY, source)
                 row.attempts.pop(name, None)
         row.unresolved_fields = unresolved(row.fields, ROW_FIELDS)
+
+
+def family_urls(page_url: str, data: dict) -> tuple[str, ...]:
+    """Every address this tour is published under, this record's included.
+
+    radingasht sells one tour as several pages, one per departure, and each of
+    them names all the others. Keyed on the page, each became a tour of its
+    own carrying every date of the family, so one departure reached the client
+    twice under two codes — and with two sets of prices, since each page had
+    read the dates its own way.
+
+    The whole family is returned rather than one chosen member, because the
+    members come and go: a departure that has left drops out of the list, and a
+    name picked from today's list would not be in tomorrow's. A code found
+    against any surviving member is the family's code.
+
+    Example:
+        >>> family_urls("https://r.com/tour/d/75418/tour-phuket",
+        ...             {"id": 75418, "siblingItineraries": [
+        ...                 {"id": 75348}, {"id": 75418}]})
+        ('https://r.com/tour/d/75348', 'https://r.com/tour/d/75418')
+        >>> family_urls("https://r.com/tour/d/75418/x", {"id": 75418})
+        ()
+    """
+    ids = {str(s.get("id")) for s in data.get("siblingItineraries") or []
+           if isinstance(s, dict) and s.get("id") is not None}
+    if len(ids) < 2:
+        return ()
+    ids.add(str(data.get("id") or ""))
+    ids.discard("")
+    own = tour_id_from_url(page_url)
+    if not own:
+        return ()
+    parsed = urlparse(page_url)
+    before = parsed.path.split(f"/{own}")[0]
+    return tuple(sorted(
+        urlunparse(parsed._replace(path=f"{before}/{one}", query="", fragment=""))
+        for one in ids
+    ))
 
 
 def sibling_ids(data: dict, today: Optional[date] = None) -> list[str]:

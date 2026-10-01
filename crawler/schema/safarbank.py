@@ -246,7 +246,7 @@ def offer_to_object(
         ('31540001', 110110110, '1')
     """
     month = "" if offer.departure.iso else (offer.departure.jalali or "")
-    tour_code = ids.tour_code(tour.tour_url, month)
+    tour_code = ids.tour_code(tour.tour_url, month, tour.family)
     start = to_jalali_parts(offer.departure.iso)
     end = to_jalali_parts(offer.ret.iso)
     packed = packed_date(start) or as_packed(month) or ""

@@ -81,6 +81,7 @@ from crawler.extraction.row_mapping import map_blocks
 from crawler.extraction.tour_api import (
     EVERY_DEPARTURE_NOTE,
     api_url_for,
+    family_urls,
     enrich_from_api,
     fetch_tour_json,
     sibling_rows,
@@ -1063,6 +1064,7 @@ async def _read_everything(
         data, error = await _tour_json(api_url, client, timeout)
         if data is not None:
             page = enrich_from_api(page, data)
+            page.family = family_urls(url, data)
             found = await _sibling_rows(api_url, url, data, client, timeout, today) if sibling_ids(data, today) else []
             if found:
                 # A shell's own rows are the template of its departures,

@@ -313,7 +313,7 @@ def offer_to_listing(tour: Tour, offer: TourOffer, ids: IdStore) -> dict:
         ('1405-06-21', '1405-06-28', '22:45')
     """
     month = _month_part(offer)
-    same = ids.tour_code(tour.tour_url, month)
+    same = ids.tour_code(tour.tour_url, month, tour.family)
     packed = _packed_start(offer)
     row = ids.fk_tour_id(same, month or packed)
     price, foreign, currency = _price_parts(offer)

@@ -146,6 +146,10 @@ class ExtractedPage:
     status_code: Optional[int] = None
     error: Optional[str] = None
 
+    # Every address this same tour is published under, where a site uses more
+    # than one. Empty on the sites that give a tour one page.
+    family: tuple[str, ...] = ()
+
     # Raw material kept for traceability and for the (future) heuristic-HTML
     # layer and LLM fallback to work from without re-fetching.
     html_raw: Optional[str] = None
