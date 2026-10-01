@@ -50,6 +50,11 @@ from crawler.schema.output_models import (
 _CHROME_TAGS = "nav,header,footer,aside"
 _CHROME_WORDS = ("menu", "nav", "header", "footer", "breadcrumb", "sidebar", "topbar")
 
+# What the page asks the visitor, rather than what it states. bisanseir heads
+# its filter "ستاره هتل" and offers "سه ستاره" beside it, and the page reader
+# took that for the grade of all 56 hotels it lists.
+_CONTROL_TAGS = "label,input,select,option,textarea,button"
+
 # The elements that hold the page rather than being part of it. Removing one
 # removes everything inside it, which is never what "this is the site's
 # furniture" should mean.
@@ -205,12 +210,23 @@ def main_text(html: str) -> str:
         ...           '<div class="site-header">منو</div>'
         ...           '<p>تاریخ رفت 9 مهرماه</p></body>')
         'تاریخ رفت 9 مهرماه'
+
+        A control offers a choice; it does not state a fact:
+
+        >>> main_text('<body><div>ستاره هتل</div><label>سه ستاره</label>'
+        ...           '<p>تاریخ رفت 9 مهرماه</p></body>')
+        'ستاره هتل تاریخ رفت 9 مهرماه'
     """
     tree = HTMLParser(html)
     for node in tree.css("script,style,noscript"):
         node.decompose()
     for node in tree.css(_CHROME_TAGS):
         node.decompose()
+    for node in tree.css(_CONTROL_TAGS):
+        # Left as a space, not removed outright: dropping the node joins the
+        # words on either side of it, and "ستاره هتل" would run into whatever
+        # the filter stood in front of.
+        node.replace_with(" ")
     _drop_other_tours(tree)
     for node in tree.css("*"):
         # ``css("*")`` walks over <body> too, and a theme is free to name

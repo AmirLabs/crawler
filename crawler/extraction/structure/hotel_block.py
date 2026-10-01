@@ -403,6 +403,85 @@ def _surrounding_text(block: Node, row_texts: list[str]) -> str:
 # that make up the rest of a card's attributes.
 _MAX_ATTRIBUTE_CHARS = 20
 
+# Never part of a rating widget.
+_SKIP_ICON_TAGS = frozenset({'script', 'style', 'noscript', '-text'})
+
+
+# A rating drawn as icons: how many may stand in a row, and how long a class
+# list on one of them can be. Five is the usual scale and seven the widest seen.
+_ICON_RUN = (3, 7)
+
+
+def rating_in_icons(block: Node) -> Optional[int]:
+    """A rating drawn as filled and empty icons, read by counting the filled.
+
+    A star widget is a short row of empty elements where the earned ones carry
+    a class the rest do not — bisanseir writes five ``<i>`` and marks three of
+    them ``fill``. Nothing here is keyed on what that class is called; what is
+    read is that a run of look-alike siblings starts with a marked prefix.
+
+    Preferred over :func:`rating_in_attributes` because the icons are what the
+    page shows a reader. bisanseir carries ``data-star="سه ستاره"`` on every
+    hotel of a page, the same value for all 56 of them including the five star
+    ones, while its icons vary from page to page — and on the pages that have
+    no such attribute, 877 hotels reached the client with no rating at all.
+
+    Example:
+        >>> from selectolax.parser import HTMLParser
+        >>> tree = HTMLParser('<div><span class="star-rating">'
+        ...     '<i class="fill"></i><i class="fill"></i><i class="fill"></i>'
+        ...     '<i></i><i></i></span></div>')
+        >>> rating_in_icons(tree.css_first("div"))
+        3
+        >>> whole = HTMLParser('<div><span><i class="on"></i><i class="on"></i>'
+        ...     '<i class="on"></i><i class="on"></i><i class="on"></i></span></div>')
+        >>> rating_in_icons(whole.css_first("div"))
+        5
+        >>> none = HTMLParser('<div><span><i></i><i></i></span></div>')
+        >>> rating_in_icons(none.css_first("div")) is None
+        True
+    """
+    for parent in [block, *block.css("*")]:
+        found = _rating_of_run(parent)
+        if found is not None:
+            return found
+    return None
+
+
+def _rating_of_run(parent: Node) -> Optional[int]:
+    """The rating this one element draws, or ``None`` if it draws none.
+
+    Kept apart from :func:`rating_in_icons` so the walk that collects a block's
+    hotels can ask it of each element it passes, instead of rescanning the
+    whole block once per hotel.
+
+    Example:
+        >>> from selectolax.parser import HTMLParser
+        >>> tree = HTMLParser('<span><i class="fill"></i><i class="fill"></i>'
+        ...                   '<i></i><i></i><i></i></span>')
+        >>> _rating_of_run(tree.css_first("span"))
+        2
+    """
+    least, most = _ICON_RUN
+    icons = [node for node in parent.iter() if node.tag not in _SKIP_ICON_TAGS]
+    if not least <= len(icons) <= most:
+        return None
+    if len({node.tag for node in icons}) != 1:
+        return None
+    if any(_clean(node.text(deep=True)) for node in icons):
+        return None  # a row of words, not a row of icons
+    marks = [(node.attributes.get("class") or "").strip() for node in icons]
+    # Only a prefix counts: the earned ones come first, and a row whose marks
+    # are scattered is not a rating.
+    filled = 0
+    for mark in marks:
+        if not mark:
+            break
+        filled += 1
+    if filled and all(not mark for mark in marks[filled:]):
+        return filled
+    return None
+
 
 def rating_in_attributes(block: Node) -> Optional[int]:
     """A rating the block states in an attribute rather than in its text.
@@ -600,7 +679,15 @@ def read_hotel_block(container: RowContainer) -> HotelBlock:
     open_run = False
     for node in block.css("*"):
         own = _clean(node.text(deep=False))
-        if not own or own not in extra:
+        if not own:
+            # A rating drawn as icons says nothing in text, and sits after the
+            # hotel it belongs to. bisanseir gives each hotel of a two-city
+            # stay its own widget, and the second hotel had no grade at all.
+            drawn = _rating_of_run(node)
+            if drawn is not None and names and stars[-1] is None:
+                stars[-1] = drawn
+            continue
+        if own not in extra:
             continue  # belongs to a row, not to the block
         a_name = _looks_like_a_name(own)
         if a_name and hotel_tag is None:
@@ -634,7 +721,8 @@ def read_hotel_block(container: RowContainer) -> HotelBlock:
 
     return HotelBlock(
         name=name,
-        star_rating=detect_star_rating(around) or rating_in_attributes(block),
+        star_rating=(detect_star_rating(around) or rating_in_icons(block)
+                     or rating_in_attributes(block)),
         board_type=detect_board_type(around),
         boards=tuple(boards) if any(boards) else (),
         stars=tuple(stars) if len(names) > 1 and any(stars) else (),
