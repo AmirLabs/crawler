@@ -53,6 +53,11 @@ from crawler.extraction.target_fields import PAGE_FIELDS, ROW_FIELDS, unresolved
 # is found the same way.
 _QUERY_BASE = re.compile(r'"queryBaseUrl"\s*:\s*"([^"]+)"')
 
+# Left on a page whose departures all came from the API's own list. The markup
+# holds a link to some of the same dates, and following those as well would
+# bring every one of them back a second time.
+EVERY_DEPARTURE_NOTE = "every departure came from the site's own list"
+
 # The tour's id inside its own URL: /tour/d/152839/<slug>. Taken as the longest
 # run of digits in the path, since the slug may hold small numbers of its own
 # ("تور-7شب-ارمنستان").
@@ -389,11 +394,18 @@ def _stamp_transport(rows: list[ExtractedRow], outbound: Optional[dict]) -> None
 
 
 def sibling_ids(data: dict, today: Optional[date] = None) -> list[str]:
-    """The departures a record points to when it states none of its own.
+    """Every other departure of this tour the record names.
 
-    avisatravel reuses a tour page as a shell: no ``transportation``, and the
-    real departures under ``siblingItineraries``, each a full record of its
-    own. Measured: 6 of its 8 dateless pages, 23 departures never read.
+    A page draws the first three of its departures and hides the rest behind
+    "مشاهده‌ی تاریخ‌های بیشتر", so reading the dates out of the markup finds
+    only what was drawn. This list has them all. Measured on alefbatour: of
+    703 departures still ahead that its crawled pages name, 231 were not in
+    the catalogue, 160 of them sellable.
+
+    A record names itself among them, and that one is left out — its own
+    offers are read where they are. A departure already gone, or one the site
+    marks sold out, is not fetched either: the list says so and there is
+    nothing to learn by asking.
 
     Example:
         >>> sibling_ids({"transportation": [], "siblingItineraries": [
@@ -401,16 +413,21 @@ def sibling_ids(data: dict, today: Optional[date] = None) -> list[str]:
         ...     {"id": 90001, "leaveDateTime": "2026-08-01T10:00:00"}]},
         ...     today=date(2026, 9, 21))
         ['97154']
-        >>> sibling_ids({"transportation": [{"departDateTime": "2026-10-01"}],
-        ...     "siblingItineraries": [{"id": 1, "leaveDateTime": "2026-10-08"}]})
-        []
+        >>> sibling_ids({"id": 1, "transportation": [{"departDateTime": "2026-10-01"}],
+        ...     "siblingItineraries": [{"id": 1, "leaveDateTime": "2026-10-01"},
+        ...                            {"id": 2, "leaveDateTime": "2026-10-08"},
+        ...                            {"id": 3, "leaveDateTime": "2026-10-15",
+        ...                             "isFull": True}]},
+        ...     today=date(2026, 10, 1))
+        ['2']
     """
-    if data.get("transportation"):
-        return []
     today = today or date.today()
+    own = str(data.get("id") or "")
     found: list[str] = []
     for sibling in data.get("siblingItineraries") or []:
         if not isinstance(sibling, dict) or sibling.get("id") is None:
+            continue
+        if own and str(sibling["id"]) == own:
             continue
         leaves = str(sibling.get("leaveDateTime") or "")[:10]
         if leaves and leaves < today.isoformat():

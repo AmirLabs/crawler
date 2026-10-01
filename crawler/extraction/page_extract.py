@@ -79,6 +79,7 @@ _DATE_LINK_SCOPE = f"{METHOD_HEURISTIC_HTML}:date_link"
 from crawler.extraction.page_facts import apply_page_facts, read_page_facts
 from crawler.extraction.row_mapping import map_blocks
 from crawler.extraction.tour_api import (
+    EVERY_DEPARTURE_NOTE,
     api_url_for,
     enrich_from_api,
     fetch_tour_json,
@@ -842,7 +843,8 @@ async def extract_page(
         200
     """
     page = await _extract_one(url, profile, client, timeout, today, unchanged)
-    if not follow_dates or not page.html_raw or UNCHANGED_NOTE in page.notes:
+    if (not follow_dates or not page.html_raw or UNCHANGED_NOTE in page.notes
+            or EVERY_DEPARTURE_NOTE in page.notes):
         return page
     return await _add_other_dates(page, profile, client, timeout, today)
 
@@ -1061,12 +1063,15 @@ async def _read_everything(
         data, error = await _tour_json(api_url, client, timeout)
         if data is not None:
             page = enrich_from_api(page, data)
-            # A shell's own rows are the template of its departures, dateless; they give way to them.
             found = await _sibling_rows(api_url, url, data, client, timeout, today) if sibling_ids(data, today) else []
             if found:
-                page.rows = found
+                # A shell's own rows are the template of its departures,
+                # dateless; they give way to them. A record that states a
+                # departure of its own keeps it and gains the rest.
+                page.rows = page.rows + found if data.get("transportation") else found
                 for index, row in enumerate(page.rows):
                     row.index = index
+                page.notes.append(EVERY_DEPARTURE_NOTE)
             closed = page.expired_rows
             page.rows, page.expired_rows = split_by_availability(page.rows, today)
             page.expired_rows += closed
