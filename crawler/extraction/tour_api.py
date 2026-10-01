@@ -432,6 +432,32 @@ def offers_nothing(data: dict) -> bool:
         and not data.get("siblingItineraries")
 
 
+def sells_nothing(data: dict) -> bool:
+    """Whether the source says this record's own offer is over.
+
+    The platform states it as a field, and we were only writing it into a
+    note. What decided whether a departure had gone was its date, and these
+    records carry no date at all, so nothing was ever judged and all of them
+    passed: 9 of alefbatour's 96 tours were published under a page printing
+    "این تور منقضی شده است" in red, with every hotel and price still listed
+    under it.
+
+    It describes this record's own offer, not the departures it points to. A
+    shell record expires with its own itinerary while the siblings it names go
+    on being sold, so those are read on their own and judged by their own
+    field.
+
+    Example:
+        >>> sells_nothing({"isExpired": True, "accommodationBundles": [{}]})
+        True
+        >>> sells_nothing({"isExpired": False, "accommodationBundles": [{}]})
+        False
+        >>> sells_nothing({})
+        False
+    """
+    return bool(data.get("isExpired"))
+
+
 async def sibling_rows(
     client: httpx.AsyncClient, api_url: str, data: dict, page_url: str = "",
     today: Optional[date] = None,
@@ -442,6 +468,8 @@ async def sibling_rows(
     for tour_id in sibling_ids(data, today):
         sibling, _ = await fetch_tour_json(client, f"{base}/{tour_id}")
         if sibling is None:
+            continue
+        if sells_nothing(sibling):
             continue
         found = _rows_from_bundles(sibling, page_url)
         _stamp_transport(found, _legs(sibling)[0])
@@ -490,11 +518,15 @@ def enrich_from_api(page: ExtractedPage, data: dict) -> ExtractedPage:
             "transportation[].destination.city")
 
     page.unresolved_page_fields = unresolved(page.page_fields, PAGE_FIELDS)
-    page.rows = [] if offers_nothing(data) else _rows_from_bundles(data, page.url)
-    _stamp_transport(page.rows, outbound)
+    read = [] if offers_nothing(data) else _rows_from_bundles(data, page.url)
+    # Read and then set aside, rather than never read: "we found nothing" and
+    # "we found eleven offers under a tour the site has closed" are different
+    # answers, and a check of one URL has to be able to tell them apart.
+    page.rows, page.expired_rows = ([], read) if sells_nothing(data) else (read, [])
+    _stamp_transport(page.rows + page.expired_rows, outbound)
     page.notes.append(
         f"offers from the site's API: {len(page.rows)} rows"
-        + (" (the site marks this tour expired)" if data.get("isExpired") else "")
+        + (" (the site marks this tour expired)" if sells_nothing(data) else "")
         + (" (full, with no departure left)" if offers_nothing(data) else "")
     )
     return page

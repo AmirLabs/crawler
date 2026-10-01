@@ -106,6 +106,18 @@ async def check(url: str, name: Optional[str], full: bool, dump: bool) -> int:
     for (raw, source), count in where.most_common(8):
         print(f"   {count:>4}  {str(raw):18} {source}")
 
+    dropped = Counter()
+    for row in page.expired_rows:
+        field = row.fields.get("departure_date")
+        value = field.value if field else None
+        raw = value.get("raw") if isinstance(value, dict) else value
+        dropped[str(raw)] += 1
+    if dropped:
+        print()
+        print("what was read and then left out, by the date it stated:")
+        for raw, count in dropped.most_common(8):
+            print(f"   {count:>4}  {raw}")
+
     out = folder_for(url, name)
     out.mkdir(parents=True, exist_ok=True)
     if dump:

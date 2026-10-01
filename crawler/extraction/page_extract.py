@@ -1067,7 +1067,9 @@ async def _read_everything(
                 page.rows = found
                 for index, row in enumerate(page.rows):
                     row.index = index
+            closed = page.expired_rows
             page.rows, page.expired_rows = split_by_availability(page.rows, today)
+            page.expired_rows += closed
         else:
             page.notes.append(f"site publishes an API but it did not answer: {error}")
 
