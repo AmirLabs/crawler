@@ -415,6 +415,8 @@ def sibling_ids(data: dict, today: Optional[date] = None) -> list[str]:
         leaves = str(sibling.get("leaveDateTime") or "")[:10]
         if leaves and leaves < today.isoformat():
             continue
+        if no_seats_left(sibling):
+            continue
         found.append(str(sibling["id"]))
     return found
 
@@ -456,6 +458,26 @@ def sells_nothing(data: dict) -> bool:
         False
     """
     return bool(data.get("isExpired"))
+
+
+def no_seats_left(data: dict) -> bool:
+    """Whether the source says this departure is sold out.
+
+    The platform badges such a date "تکمیل ظرفیت" and states it as a field.
+    It sits on the departure, not on the hotels under it: of the 1,957
+    accommodation bundles the three sites on this platform publish, not one
+    carries a full flag of its own, so a sold-out date goes whole and there is
+    nothing finer to weigh.
+
+    Example:
+        >>> no_seats_left({"isFull": True})
+        True
+        >>> no_seats_left({"isFull": False})
+        False
+        >>> no_seats_left({})
+        False
+    """
+    return bool(data.get("isFull"))
 
 
 async def sibling_rows(
@@ -522,11 +544,13 @@ def enrich_from_api(page: ExtractedPage, data: dict) -> ExtractedPage:
     # Read and then set aside, rather than never read: "we found nothing" and
     # "we found eleven offers under a tour the site has closed" are different
     # answers, and a check of one URL has to be able to tell them apart.
-    page.rows, page.expired_rows = ([], read) if sells_nothing(data) else (read, [])
+    gone = sells_nothing(data) or no_seats_left(data)
+    page.rows, page.expired_rows = ([], read) if gone else (read, [])
     _stamp_transport(page.rows + page.expired_rows, outbound)
     page.notes.append(
         f"offers from the site's API: {len(page.rows)} rows"
         + (" (the site marks this tour expired)" if sells_nothing(data) else "")
+        + (" (the site marks this departure sold out)" if no_seats_left(data) else "")
         + (" (full, with no departure left)" if offers_nothing(data) else "")
     )
     return page
