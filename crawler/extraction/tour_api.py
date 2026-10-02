@@ -407,11 +407,21 @@ def family_urls(page_url: str, data: dict) -> tuple[str, ...]:
     name picked from today's list would not be in tomorrow's. A code found
     against any surviving member is the family's code.
 
+    Only what the record names, never the record itself. Some of them list
+    themselves among their departures and some do not, so adding the record's
+    own id gave each member a family of its own: alefbatour sells one Armenia
+    tour under 184208 and 184221, both naming the same 21 departures and
+    neither naming the other, and the two reached the client as two tours.
+
     Example:
         >>> family_urls("https://r.com/tour/d/75418/tour-phuket",
         ...             {"id": 75418, "siblingItineraries": [
         ...                 {"id": 75348}, {"id": 75418}]})
         ('https://r.com/tour/d/75348', 'https://r.com/tour/d/75418')
+        >>> both = {"siblingItineraries": [{"id": 1}, {"id": 2}]}
+        >>> family_urls("https://r.com/tour/d/7/x", both) == family_urls(
+        ...     "https://r.com/tour/d/8/x", both)
+        True
         >>> family_urls("https://r.com/tour/d/75418/x", {"id": 75418})
         ()
     """
@@ -419,7 +429,6 @@ def family_urls(page_url: str, data: dict) -> tuple[str, ...]:
            if isinstance(s, dict) and s.get("id") is not None}
     if len(ids) < 2:
         return ()
-    ids.add(str(data.get("id") or ""))
     ids.discard("")
     own = tour_id_from_url(page_url)
     if not own:
