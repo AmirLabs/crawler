@@ -43,6 +43,7 @@ from crawler.extraction.readers.labels import (
     detect_nights,
     detect_room_type,
     detect_star_rating,
+    nights_per_city,
 )
 from crawler.extraction.readers.prices import CURRENCY_WORDS, find_prices
 
@@ -260,6 +261,26 @@ def _looks_like_a_name(text: str) -> bool:
     if not _NAMES_NOTHING.fullmatch(re.sub(r"[^\w]|[\d۰-۹٠-٩_]", "", name_only(text))):
         return True
     return False
+
+
+def _only_stays(text: str, stays: tuple[tuple[int, str], ...]) -> bool:
+    """Whether a text that lists stays names no hotel beside them.
+
+    A card may state a grade, a board and the nights spent in each city and
+    nothing more, and then the cities are the only lodging it gives. One that
+    also names a hotel has better data than the city, so the stays are left.
+
+    Example:
+        >>> _only_stays("هتل 4 ستاره (B.B) | 4 شب بارسلونا |", ((4, "بارسلونا"),))
+        True
+        >>> _only_stays("هتل 3 ستاره FORUM PARK | 4 شب بارسلونا |", ((4, "بارسلونا"),))
+        False
+    """
+    rest = text
+    for _, city in stays:
+        rest = rest.replace(city, " ")
+    rest = re.sub(r"[\d۰-۹٠-٩]+" + r"[\s\u200c]*" + r"شب", " ", rest)
+    return not _looks_like_a_name(_clean(rest))
 
 
 def name_only(text: str) -> str:
@@ -641,6 +662,22 @@ def read_hotel_block(container: RowContainer) -> HotelBlock:
         >>> found = read_hotel_block(find_row_containers(tree)[0])
         >>> found.name, found.star_rating, found.board_type
         ('The Train Resort', 3, 'BB')
+
+        A name that carries its own grade and plan stands for a stay of its
+        own, so vanrosh's two hotels on one price both come through:
+
+        >>> tree = HTMLParser(
+        ...     '<div class="hotel">'
+        ...     '<p>هتل 3 ستاره (B.B) Phi Phi Andaman</p>'
+        ...     '<p>هتل 4 ستاره (B.B) BAUMANBURI</p>'
+        ...     '<div class="beds"><div class="bed">دو تخته 82,000,000 تومان</div>'
+        ...     '<div class="bed">یک تخته 99,000,000 تومان</div></div></div>'
+        ... )
+        >>> found = read_hotel_block(find_row_containers(tree)[0])
+        >>> found.name
+        'هتل Phi Phi Andaman + هتل BAUMANBURI'
+        >>> found.stars, found.boards
+        ((3, 4), ('BB', 'BB'))
     """
     block = find_hotel_block(container)
     if block is None:
@@ -689,14 +726,31 @@ def read_hotel_block(container: RowContainer) -> HotelBlock:
             continue
         if own not in extra:
             continue  # belongs to a row, not to the block
+        # A card that gives nights and a city where the hotel's name belongs
+        # is naming a stay per city, not one hotel. vanrosh sells most of its
+        # European tours this way and the cities were arriving as hotel names.
+        stays = nights_per_city(own) if not names else ()
+        if stays and _only_stays(own, stays):
+            grade, board = detect_star_rating(own), detect_board_type(own)
+            for nights_there, city in stays:
+                names.append("")
+                boards.append(board)
+                stars.append(grade)
+                each_nights.append(nights_there)
+                cities.append(city)
+            open_run = False
+            continue
         a_name = _looks_like_a_name(own)
+        # A name that states its own grade or board is a stay of its own, even
+        # with nothing between it and the name before it.
+        states_itself = bool(_A_GRADE.search(own) or _A_BOARD.search(own))
         if a_name and hotel_tag is None:
             hotel_tag = node.tag
         if a_name and node.tag == hotel_tag:
-            if not open_run and name_only(own) not in names:
+            if (states_itself or not open_run) and name_only(own) not in names:
                 names.append(name_only(own))
-                boards.append(None)
-                stars.append(None)
+                boards.append(detect_board_type(own) if states_itself else None)
+                stars.append(detect_star_rating(own) if states_itself else None)
                 each_nights.append(None)
                 cities.append(None)
             open_run = True
@@ -713,7 +767,8 @@ def read_hotel_block(container: RowContainer) -> HotelBlock:
             each_nights[-1] = detect_nights(own)
         if a_name and cities[-1] is None and detect_nights(own) is None:
             cities[-1] = own
-    name = " + ".join(names) if names else None
+    named = [part for part in names if part]
+    name = " + ".join(named) if named else None
 
     # The name must come from the block itself, but a rating or a board code
     # is often printed on the card around it, so those look a little wider.
