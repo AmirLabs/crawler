@@ -47,6 +47,30 @@ CLOSED_NOTICES = (
 )
 
 
+def states_only_a_price(row: ExtractedRow) -> bool:
+    """Whether a row gives a price and says nothing about what it buys.
+
+    An offer says what is sold — a room, a hotel, a date, a board or a length.
+    A price on its own does not, and a marketing banner is all price: vanrosh
+    keeps 20 empty tour pages whose only repeating block is a strip reading
+    "ویزای ژاپن ۲۹۹ دلار", and each became a tour with one package. No package
+    on the seven published sites states a price and nothing else.
+
+    Example:
+        >>> from crawler.extraction.models import ExtractedField, METHOD_HEURISTIC_HTML
+        >>> price = ExtractedField({"amount": 299.0}, METHOD_HEURISTIC_HTML)
+        >>> states_only_a_price(ExtractedRow(fields={"price": price}))
+        True
+        >>> room = ExtractedField("double", METHOD_HEURISTIC_HTML)
+        >>> states_only_a_price(ExtractedRow(fields={"price": price, "room_type": room}))
+        False
+        >>> states_only_a_price(ExtractedRow())
+        False
+    """
+    stated = {name for name, field in row.fields.items() if field.value not in (None, "", [])}
+    return stated == {"price"}
+
+
 def _stated(row: ExtractedRow) -> Optional[str]:
     """The departure exactly as the page wrote it, before any parsing.
 

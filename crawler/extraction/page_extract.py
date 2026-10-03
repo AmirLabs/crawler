@@ -70,13 +70,21 @@ from crawler.extraction.models import (
     record_attempt,
 )
 from crawler.automation.memory import UNCHANGED_NOTE
-from crawler.extraction.availability import find_closed_notice, split_by_availability
+from crawler.extraction.availability import (
+    find_closed_notice,
+    split_by_availability,
+    states_only_a_price,
+)
 from crawler.extraction.date_links import find_date_links
 
 # How a departure taken from the link that asked for it is marked, so it is
 # never read back as one printed inside the row.
 _DATE_LINK_SCOPE = f"{METHOD_HEURISTIC_HTML}:date_link"
-from crawler.extraction.page_facts import apply_page_facts, read_page_facts
+from crawler.extraction.page_facts import (
+    apply_page_facts,
+    departure_slot_without_a_date,
+    read_page_facts,
+)
 from crawler.extraction.row_mapping import map_blocks
 from crawler.extraction.tour_api import (
     EVERY_DEPARTURE_NOTE,
@@ -568,7 +576,15 @@ def extract_page_from_html(
     facts = read_page_facts(html)
     before = len(rows)
     rows, added = apply_page_facts(rows, facts)
+    # Judged after the page's own facts have been handed down, so a row is only
+    # called empty on everything it ends up stating.
+    advertising = [row for row in rows if states_only_a_price(row)]
+    rows = [row for row in rows if row not in advertising]
     page.rows, page.expired_rows = split_by_availability(rows, today)
+    if advertising:
+        page.notes.append(
+            f"{len(advertising)} rows priced something without saying what")
+    _retire_a_page_that_does_not_run(page, html)
     _absolute_hotel_images(page)
     _drop_the_hotel_from_destination(page)
     page.calendar = _read_calendar(page, today)
@@ -596,6 +612,33 @@ def extract_page_from_html(
             else "nothing left to sell and the page gives no reason"
         )
     return page
+
+
+def _retire_a_page_that_does_not_run(page: ExtractedPage, html: str) -> None:
+    """Drop every row of a page that states it has no departure at all.
+
+    Only where no row gave a date, so a page whose rows do state departures is
+    never retired by what is written beside them: on alefbatour and avisatravel
+    a sentence saying the tour is over sits above departures that are still
+    open, which is why :data:`CLOSED_NOTICES` explain a page and never decide
+    one.
+
+    Example:
+        >>> from crawler.extraction.models import ExtractedRow
+        >>> page = ExtractedPage(url="https://x.com/t", rows=[ExtractedRow()])
+        >>> _retire_a_page_that_does_not_run(page, "<body><div>"
+        ...     "<span>تاریخ رفت</span><span>در حال .......</span></div></body>")
+        >>> len(page.rows), len(page.expired_rows), page.notes
+        (0, 1, ["no departure to sell: where the date goes it says 'در حال .......'"])
+    """
+    if not page.rows or any(_row_date(row) for row in page.rows):
+        return
+    said = departure_slot_without_a_date(html)
+    if said is None:
+        return
+    page.expired_rows = page.expired_rows + page.rows
+    page.rows = []
+    page.notes.append(f"no departure to sell: where the date goes it says {said!r}")
 
 
 def _stamp_country(page: ExtractedPage, tree: HTMLParser) -> None:

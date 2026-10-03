@@ -474,6 +474,57 @@ def read_block_dates(html: str) -> tuple[list[DateText], Optional[DateText]]:
     return departures, returning
 
 
+# How much may sit in the departure slot before it stops being a value and
+# starts being a paragraph that happens to follow the caption.
+_MAX_SLOT_CHARS = 60
+
+_A_LETTER = re.compile(r"[^\W\d_]", re.UNICODE)
+
+
+def departure_slot_without_a_date(html: str) -> Optional[str]:
+    """What the page put where its departure date goes, when it is not a date.
+
+    A page that captions the date and then writes words in its place is saying
+    it has no departure to sell: vanrosh answers "تاریخ رفت: در حال ......." and
+    "تاریخ رفت: در حال حاضر اجرا ندارد" on 20 of its 95 tours.
+
+    An *empty* slot is not the same claim and answers ``None``. bisanseir and
+    avisatravel caption the date on pages that state none — bisanseir's reads
+    "تاریخ حرکت:" and then nothing — and those pages sell by room type, which is
+    why :mod:`crawler.extraction.availability` keeps rows that name no date.
+
+    Example:
+        >>> departure_slot_without_a_date(
+        ...     '<body><div><span>تاریخ رفت</span><span>در حال .......</span></div></body>')
+        'در حال .......'
+        >>> departure_slot_without_a_date(
+        ...     '<body><div><span>تاریخ حرکت:</span><span></span></div></body>') is None
+        True
+        >>> departure_slot_without_a_date(
+        ...     '<body><div><span>تاریخ رفت</span><span>15 شهریور</span></div></body>') is None
+        True
+    """
+    tree = HTMLParser(html)
+    for node in tree.css("script, style, noscript"):
+        node.decompose()
+    for node in tree.css("*"):
+        own = _clean(node.text(deep=False))
+        if not own or len(own) > _MAX_CAPTION_CHARS:
+            continue
+        match = next((m for c in _DEPARTURE_CAPTIONS if (m := c.search(own))), None)
+        if match is None:
+            continue
+        places = [own[match.end():]]
+        places += [_clean(after.text(deep=True)) for after in _following(node)[:1]]
+        for text in places:
+            said = _clean(text).strip(":：،, ")
+            if not said or len(said) > _MAX_SLOT_CHARS:
+                continue
+            if _A_LETTER.search(said) and not find_dates(said):
+                return said
+    return None
+
+
 def _following(node) -> list:
     """The elements after ``node``, and after its parent, in reading order.
 
