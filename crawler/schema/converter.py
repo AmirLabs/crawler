@@ -425,10 +425,18 @@ def _hotels_named(
         >>> _hotels_named("A + B", None, None, None, 3,
         ...               image_url="https://x.com/a.jpg")[1].image_url is None
         True
+        >>> [(h.name, h.city, h.nights) for h in _hotels_named(
+        ...     None, None, 4, "BB", 4, stars=(4, 4), each_nights=(4, 3),
+        ...     cities=("بارسلونا", "زوریخ"))]
+        [(None, 'بارسلونا', 4), (None, 'زوریخ', 3)]
     """
     parts = [part.strip() for part in str(name).split(" + ")] if name else []
     parts = [part for part in parts if part]
-    if len(parts) < 2:
+    # How many stays the page stated, which is not always how many it named.
+    # vanrosh prints "4 شب بارسلونا + 3 شب زوریخ" and names neither hotel, so
+    # counting names alone sent two stays to the client as one.
+    stays = max(len(parts), len(list(cities)) if cities else 0)
+    if stays < 2:
         return [Hotel(name=name, city=city, star_rating=star_rating,
                       board_type=board_type, nights=nights,
                       image_url=image_url)]
@@ -436,17 +444,17 @@ def _hotels_named(
         listed = list(values) if values else []
         return listed[index] if index < len(listed) else None
 
-    return [Hotel(name=parts[0], city=each(cities, 0) or city,
+    return [Hotel(name=each(parts, 0), city=each(cities, 0) or city,
                   star_rating=each(stars, 0) or star_rating,
                   board_type=each(boards, 0) or board_type,
                   nights=each(each_nights, 0) or nights,
                   image_url=image_url)] + [
-        Hotel(name=part,
+        Hotel(name=each(parts, index),
               city=each(cities, index),
               star_rating=each(stars, index),
               board_type=each(boards, index),
               nights=each(each_nights, index))
-        for index, part in enumerate(parts[1:], start=1)
+        for index in range(1, stays)
     ]
 
 

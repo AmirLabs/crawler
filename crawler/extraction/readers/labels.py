@@ -275,6 +275,53 @@ def detect_nights(text: str) -> Optional[int]:
     return None
 
 
+_A_STAY = re.compile(r"^(\d{1,2})" + _GAP + r"شب" + _GAP + r"(.+)$")
+_STAY_PIECES = re.compile(r"[+\-,،؛/|]")
+_MAX_CITY_CHARS = 30
+
+
+def nights_per_city(text: str) -> tuple[tuple[int, str], ...]:
+    """The stays a text lists where it gives nights and a city instead of a hotel.
+
+    vanrosh sells its European tours without naming the hotels at all: the card
+    reads "هتل 4 ستاره (B.B) | 4 شب بارسلونا + 3 شب زوریخ |", which is two
+    stays under one price. 207 of its 776 hotel names were this and nothing
+    else, and no other site writes a night count into a hotel name.
+
+    Nothing comes back unless every piece that counts nights also says where
+    they are spent, so nahalgasht's "2 شب 3 شب" — two options for one stay, not
+    two cities — is left alone.
+
+    Example:
+        >>> nights_per_city("هتل 4 ستاره (B.B) | 4 شب بارسلونا + 3 شب زوریخ |")
+        ((4, 'بارسلونا'), (3, 'زوریخ'))
+        >>> nights_per_city("هتل | 4 شب بارسلونا - 3 شب رم - 3 شب زوریخ |")
+        ((4, 'بارسلونا'), (3, 'رم'), (3, 'زوریخ'))
+        >>> nights_per_city("3 شب تنریف")
+        ((3, 'تنریف'),)
+        >>> nights_per_city("2 شب 3 شب")
+        ()
+        >>> nights_per_city("هتل 3 ستاره (B.B) FORUM PARK")
+        ()
+        >>> nights_per_city("مدت تور: 7 شب و 8 روز")
+        ()
+    """
+    stays: list[tuple[int, str]] = []
+    for piece in _STAY_PIECES.split(normalize_digits(text)):
+        if _NIGHTS_RE.search(piece) is None:
+            continue
+        match = _A_STAY.match(piece.strip())
+        if match is None:
+            return ()
+        city = match.group(2).strip(" :،,.()")
+        if not city or len(city) > _MAX_CITY_CHARS:
+            return ()
+        if re.search(r"\d|شب|روز", city):
+            return ()
+        stays.append((int(match.group(1)), city))
+    return tuple(stays)
+
+
 def detect_board_type(text: str) -> Optional[str]:
     """Read the meal plan code, normalised to letters only.
 
