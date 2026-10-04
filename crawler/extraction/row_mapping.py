@@ -108,6 +108,7 @@ _BLOCK_FIELDS: tuple[tuple[str, str], ...] = (
     ("stars", "hotel_stars"),
     ("each_nights", "hotel_nights"),
     ("cities", "hotel_cities"),
+    ("images", "hotel_images"),
     ("nights", "nights"),
     ("image_url", "hotel_image"),
 )

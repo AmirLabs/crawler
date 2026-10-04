@@ -387,6 +387,7 @@ def _hotels_named(
     stars: Optional[Any] = None,
     each_nights: Optional[Any] = None,
     cities: Optional[Any] = None,
+    images: Optional[Any] = None,
 ) -> list[Hotel]:
     """One hotel per hotel, out of the one string the markup path joins them into.
 
@@ -396,9 +397,10 @@ def _hotels_named(
     name loses every one of them: lachinseir's Asia tour arrived as a single
     hotel called "IMPIANA HOTEL + MERCURE MAKKASAN + AYUNG RESORT + MAMAKA".
 
-    The picture is not split with the name. It was read once for the stay and
-    there is nothing in the markup saying which hotel it belongs to, so it
-    stays on the first and the rest carry only what the page actually named.
+    The picture is split with the name where the block showed one for each
+    hotel, which nahalgasht and bisanseir do. Where it showed a single picture
+    for the whole stay, nothing in the markup says which hotel it belongs to,
+    so it stays on the first and the rest carry only what the page named.
 
     The board, the grade and the nights are split where the page did state one
     per hotel — nahalgasht prints "هتل پنجکنت پلازا 3 ستاره ... - 2 شب" under
@@ -425,6 +427,12 @@ def _hotels_named(
         >>> _hotels_named("A + B", None, None, None, 3,
         ...               image_url="https://x.com/a.jpg")[1].image_url is None
         True
+        >>> [h.image_url for h in _hotels_named("A + B", None, None, None, 3,
+        ...     image_url="https://x.com/a.jpg", images=("/a.jpg", "/b.jpg"))]
+        ['/a.jpg', '/b.jpg']
+        >>> [h.image_url for h in _hotels_named("A + B", None, None, None, 3,
+        ...     image_url="https://x.com/b.jpg", images=(None, "/b.jpg"))]
+        [None, '/b.jpg']
         >>> [(h.name, h.city, h.nights) for h in _hotels_named(
         ...     None, None, 4, "BB", 4, stars=(4, 4), each_nights=(4, 3),
         ...     cities=("بارسلونا", "زوریخ"))]
@@ -444,16 +452,25 @@ def _hotels_named(
         listed = list(values) if values else []
         return listed[index] if index < len(listed) else None
 
+    # A picture per hotel replaces the single one rather than falling back on
+    # it. bisanseir leaves the first hotel of a pair without a photograph and
+    # shows the second's, and the old rule handed that building to the first.
+    def picture(index: int) -> Optional[Any]:
+        if images:
+            return each(images, index)
+        return image_url if index == 0 else None
+
     return [Hotel(name=each(parts, 0), city=each(cities, 0) or city,
                   star_rating=each(stars, 0) or star_rating,
                   board_type=each(boards, 0) or board_type,
                   nights=each(each_nights, 0) or nights,
-                  image_url=image_url)] + [
+                  image_url=picture(0))] + [
         Hotel(name=each(parts, index),
               city=each(cities, index),
               star_rating=each(stars, index),
               board_type=each(boards, index),
-              nights=each(each_nights, index))
+              nights=each(each_nights, index),
+              image_url=picture(index))
         for index in range(1, stays)
     ]
 
@@ -553,6 +570,7 @@ def _build_offer(
             stars=_value(first, "hotel_stars"),
             each_nights=_value(first, "hotel_nights"),
             cities=_value(first, "hotel_cities"),
+            images=_value(first, "hotel_images"),
         )
 
     transport_name = _value(first, "transport_name")
