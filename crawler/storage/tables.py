@@ -29,12 +29,16 @@ class Base(DeclarativeBase):
 
 
 class TourCode(Base):
-    """One tour's page, minus the date asked for, and the code it was given."""
+    """One tour's page, minus the date asked for, and the code it was given.
+
+    A tour sold under several addresses holds one row per address, all naming
+    the same code, so the code survives any one of them departing.
+    """
 
     __tablename__ = "tour_codes"
 
     key: Mapped[str] = mapped_column(String, primary_key=True)
-    code: Mapped[str] = mapped_column(String, unique=True)
+    code: Mapped[str] = mapped_column(String, index=True)
 
 
 class HotelId(Base):

@@ -179,40 +179,52 @@ class Database:
             >>> db.tour_code("https://x.com/tour/9", family=both + ("https://x.com/tour/9",))
             '31540003'
 
+            A member that departs leaves the family, and the code stays:
+
+            >>> first = ("https://x.com/tour/30", "https://x.com/tour/31")
+            >>> db.tour_code("https://x.com/tour/31", family=first)
+            '31540004'
+            >>> later = ("https://x.com/tour/31", "https://x.com/tour/32")
+            >>> db.tour_code("https://x.com/tour/32", family=later)
+            '31540004'
+
             Codes minted apart are merged on the oldest:
 
             >>> db.tour_code("https://x.com/tour/20"), db.tour_code("https://x.com/tour/21")
-            ('31540004', '31540005')
+            ('31540005', '31540006')
             >>> pair = ("https://x.com/tour/20", "https://x.com/tour/21")
             >>> db.tour_code("https://x.com/tour/21", family=pair)
-            '31540004'
+            '31540005'
         """
         keys = list(dict.fromkeys(
             [_code_key(page_url, part)] + [_code_key(one, part) for one in family]
         ))
         held = [row for row in (self.session.get(TourCode, key) for key in keys) if row]
-        wanted = _code_key(family[0], part) if family else _code_key(page_url, part)
 
         if not held:
             code = f"{TOUR_CODE_PREFIX}{self._take('tour'):0{TOUR_CODE_DIGITS}d}"
-            self.session.add(TourCode(key=wanted, code=code))
-            return code
+        else:
+            code = min(row.code for row in held)
+            for gone in {row.code for row in held} - {code}:
+                self.forget_tour(gone)
+                for row in self.session.scalars(
+                    select(TourCode).where(TourCode.code == gone)
+                ).all():
+                    row.code = code
 
-        kept = min(held, key=lambda row: row.code)
-        for row in held:
-            if row is not kept:
-                self.forget_tour(row.code)
-                self.session.delete(row)
-        if kept.key != wanted:
-            # One row, moved: the member it was filed under may have departed
-            # and left the family, and a code must outlive any one departure.
-            code = kept.code
-            self.session.delete(kept)
-            self.session.flush()
-            self.session.add(TourCode(key=wanted, code=code))
-            return code
+        # Written against every address, not only one of them. Filed under a
+        # single member, the row was lost the night that member departed and
+        # left the family: alefbatour's 5-night Armenia was keyed on 184165,
+        # which sold out and dropped off the sibling list, and the tour was
+        # given a second code still carrying the prices of the week it left.
+        for key in keys:
+            row = self.session.get(TourCode, key)
+            if row is None:
+                self.session.add(TourCode(key=key, code=code))
+            elif row.code != code:
+                row.code = code
         self.session.flush()
-        return kept.code
+        return code
 
     def forget_tour(self, code: str) -> None:
         """Delete everything stored under one tour code.
