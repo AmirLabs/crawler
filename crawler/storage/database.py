@@ -384,13 +384,26 @@ class Database:
             0
             >>> db.catalogue()[1]
             []
+
+            A page whose records carry two codes files each under its own:
+
+            >>> mehr = {"key": "31540002|14050730|1", "tour_code": "31540002",
+            ...         "start_date": "1405-07-30"}
+            >>> aban = {"key": "31540003|14050830|1", "tour_code": "31540003",
+            ...         "start_date": "1405-08-30"}
+            >>> db.store_tour("31540002", [mehr, aban], [])
+            2
+            >>> [len(db.packages_for(code)) for code in ("31540002", "31540003")]
+            [1, 1]
         """
         moved = 0
         for table, records in ((Package, packages), (Tour, tours)):
             key_column = Package.key if table is Package else Tour.api_id
             keep = {record_key(record) for record in records}
+            codes = {tour_code} | {str(record["tour_code"]) for record in records
+                                   if record.get("tour_code")}
             self.session.execute(
-                delete(table).where(table.tour_code == tour_code, key_column.not_in(keep))
+                delete(table).where(table.tour_code.in_(codes), key_column.not_in(keep))
             )
             for record in records:
                 key = record_key(record)
@@ -401,7 +414,13 @@ class Database:
                 if row is None:
                     row = table(**{"key" if table is Package else "api_id": key})
                     self.session.add(row)
-                row.tour_code = tour_code
+                # The code this record carries, not the one the page was filed
+                # under. nahalgasht sells one page across two months and the
+                # client buys each month on its own, so the page's records hold
+                # two codes; filing them all under the first left the second
+                # month's tour asking for packages that were stored elsewhere,
+                # and the client was answered with none.
+                row.tour_code = str(record.get("tour_code") or tour_code)
                 row.start_date = as_packed(record.get("start_date")) or ""
                 row.record = json.dumps(record, ensure_ascii=False)
                 row.record_hash = fingerprint

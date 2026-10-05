@@ -93,6 +93,10 @@ _NOT_A_NAME = (
     # the prices are quoted in, and both read as two more hotels.
     "شرایط",
     "اقساط",
+    # A price column for a child is not a hotel. nahalgasht heads one
+    # "کودک خردسال", which no room reader knows, so it survived every other
+    # test and was taken as the name of the stay.
+    "کودک",
 )
 
 _HAS_LETTER = re.compile(r"[^\W\d_]", re.UNICODE)

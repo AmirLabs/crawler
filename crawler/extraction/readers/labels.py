@@ -115,6 +115,9 @@ _ROOM_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"زیر" + _GAP + r"[۱۲١٢12]" + _GAP + r"سال", ROOM_INFANT),
     (r"کودک" + _GAP + r"بدون" + _GAP + r"تخت", ROOM_CHILD_NO_BED),
     (r"کودک" + _GAP + r"با" + _GAP + r"تخت", ROOM_CHILD_WITH_BED),
+    # nahalgasht heads a column "کودک خردسال" and prices it between the adult
+    # and the infant, which is the child-with-bed seat under another name.
+    (r"خردسال", ROOM_CHILD_WITH_BED),
     (r"(?:نوزاد|اینفنت|انفانت)", ROOM_INFANT),
     (r"(?:سه|۳|3)" + _GAP + r"تخته", ROOM_TRIPLE),
     (r"(?:دو|۲|2)" + _GAP + r"تخته", ROOM_DOUBLE),
