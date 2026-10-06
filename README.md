@@ -156,6 +156,26 @@ everything, which is the safe way to fail.
 encryption, so this belongs behind HTTPS. On plain HTTP the password travels in
 the clear.
 
+### Running it as a service
+
+The API is a long-lived process and belongs under the init system, not in a
+terminal: started by hand it does not survive a reboot, and nothing says so
+until the feed is quiet. `deploy/crawler-api.service` reads the same `.env`
+and restarts the process if it dies.
+
+```bash
+install -m 644 deploy/crawler-api.service /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now crawler-api
+systemctl status crawler-api --no-pager
+```
+
+It logs to the journal rather than a file: `journalctl -u crawler-api -f`.
+
+**Restart it after replacing the database file.** Writing to the database
+needs no restart, because a request opens it fresh. Swapping the file out from
+under a running process does: its open handles, and the `-wal` and `-shm`
+beside them, go stale and every request answers 500.
+
 ### Schedule
 
 One run a night, early enough to have finished before the feed is read:

@@ -1,0 +1,14 @@
+[Unit]
+Description=Tour crawler API
+After=network.target
+
+[Service]
+Type=exec
+WorkingDirectory=/srv/crawler
+EnvironmentFile=/srv/crawler/.env
+ExecStart=/srv/crawler/.venv/bin/uvicorn crawler.api.app:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
