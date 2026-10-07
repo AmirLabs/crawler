@@ -503,20 +503,39 @@ class Database:
         ``sites`` narrows it to those websites, which is how one site is put in
         front of the client while the others are still being worked on.
 
+        A record that states no departure is left out of all three routes. The
+        date is what the client files a package under, so one without it cannot
+        be shown or booked: alefbatour publishes 20 tours as a season rather
+        than a day — "تور 7روزه اسپانیا پاییز و زمستان 1405" — and those 88
+        packages were arriving with an empty start_date. They stay in the
+        database and on the report pages, which is where they are checked.
+
         Example:
             >>> db = Database(path=None); _ = db.start_run()
-            >>> _ = db.store_tour("1", [{"tour_code": "1", "number_package": "1"}],
-            ...                   [{"api_id": "a", "source": {"website": "bisanseir.com"}}])
-            >>> _ = db.store_tour("2", [{"tour_code": "2", "number_package": "1"}],
-            ...                   [{"api_id": "b", "source": {"website": "vanrosh.com"}}])
+            >>> _ = db.store_tour("1", [{"tour_code": "1", "number_package": "1",
+            ...                          "start_date": "1405-07-01"}],
+            ...                   [{"api_id": "a", "start_date": "1405-07-01",
+            ...                     "source": {"website": "bisanseir.com"}}])
+            >>> _ = db.store_tour("2", [{"tour_code": "2", "number_package": "1",
+            ...                          "start_date": "1405-07-02"}],
+            ...                   [{"api_id": "b", "start_date": "1405-07-02",
+            ...                     "source": {"website": "vanrosh.com"}}])
             >>> [len(part) for part in db.catalogue()]
             [2, 2]
             >>> [len(part) for part in db.catalogue(["bisanseir.com"])]
             [1, 1]
+
+            A record stating no departure is held back:
+
+            >>> _ = db.store_tour("3", [{"tour_code": "3", "start_date": ""}],
+            ...                   [{"api_id": "c", "start_date": "",
+            ...                     "source": {"website": "bisanseir.com"}}])
+            >>> [len(part) for part in db.catalogue()]
+            [2, 2]
         """
         codes = self.codes_of(sites)
-        packages = select(Package.record)
-        tours = select(Tour.record)
+        packages = select(Package.record).where(Package.start_date != "")
+        tours = select(Tour.record).where(Tour.start_date != "")
         if codes is not None:
             packages = packages.where(Package.tour_code.in_(codes))
             tours = tours.where(Tour.tour_code.in_(codes))
@@ -531,16 +550,19 @@ class Database:
 
         Example:
             >>> db = Database(path=None); _ = db.start_run()
-            >>> _ = db.store_tour("1", [], [{"api_id": "a"}]); db.finish_run()
-            >>> _ = db.start_run()
-            >>> _ = db.store_tour("2", [], [{"api_id": "b"}]); db.finish_run()
+            >>> _ = db.store_tour("1", [], [{"api_id": "a", "start_date": "1405-07-01"}])
+            >>> db.finish_run(); _ = db.start_run()
+            >>> _ = db.store_tour("2", [], [{"api_id": "b", "start_date": "1405-07-02"}])
+            >>> db.finish_run()
             >>> [t["api_id"] for t in db.changes()[1]], len(db.catalogue()[1])
             (['b'], 2)
         """
         last = run or self._last_finished_run()
         codes = self.codes_of(sites)
-        packages = select(Package.record).where(Package.changed_run == last)
-        tours = select(Tour.record).where(Tour.changed_run == last)
+        packages = select(Package.record).where(Package.changed_run == last,
+                                                Package.start_date != "")
+        tours = select(Tour.record).where(Tour.changed_run == last,
+                                          Tour.start_date != "")
         if codes is not None:
             packages = packages.where(Package.tour_code.in_(codes))
             tours = tours.where(Tour.tour_code.in_(codes))
@@ -566,7 +588,8 @@ class Database:
         codes = self.codes_of(sites)
         if codes is not None and tour_code not in codes:
             return []
-        query = select(Package.record).where(Package.tour_code == tour_code)
+        query = select(Package.record).where(Package.tour_code == tour_code,
+                                             Package.start_date != "")
         if changed:
             query = query.where(Package.changed_run == self._last_finished_run())
         since, until = as_packed(start_date), as_packed(end_date)
