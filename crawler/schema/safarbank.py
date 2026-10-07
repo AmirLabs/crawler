@@ -208,10 +208,10 @@ def _hotel(hotel: Hotel, ids: IdStore, site: str) -> dict:
         >>> out = _hotel(Hotel(name="The Sukosol", city="بانکوک", star_rating=5,
         ...                    nights=2, image_url="https://x.com/a.webp"),
         ...              IdStore(path=None), "tahagasht")
-        >>> out["night"], out["logo"]
-        ('2', 'https://x.com/a.webp')
-        >>> _hotel(Hotel(name="The Sukosol"), IdStore(path=None), "tahagasht")["logo"]
-        ''
+        >>> out["night"], out["gallery"]
+        ('2', [{'pic_address': 'https://x.com/a.webp'}])
+        >>> _hotel(Hotel(name="The Sukosol"), IdStore(path=None), "tahagasht")["gallery"]
+        []
     """
     return {
         "id": ids.hotel_id(site, hotel.name),
@@ -219,15 +219,16 @@ def _hotel(hotel: Hotel, ids: IdStore, site: str) -> dict:
         "name_en": hotel.name_latin or "",
         "trip_advisor": "0",
         "star_code": str(hotel.star_rating) if hotel.star_rating else "",
-        # Their field for the hotel's one picture. Named logo, but it is the
-        # photograph of the building, which is what they asked us to send.
         "logo": hotel.image_url or "",
         "region": "0",
         "type_code": "1",
         "city_name": hotel.city or "",
         "city_name_en": "",
         "facilities": [],
-        "gallery": [],
+        # Where they read a hotel's photograph. It was going to logo alone, and
+        # their site showed no picture at all, because logo is not the field
+        # they display. Sent in both: logo is what they first asked for.
+        "gallery": [{"pic_address": hotel.image_url}] if hotel.image_url else [],
         "night": str(hotel.nights) if hotel.nights else "",
         "room_service": hotel.board_type or "",
     }

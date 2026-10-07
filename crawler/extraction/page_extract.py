@@ -350,11 +350,32 @@ def _absolute_hotel_images(page: ExtractedPage) -> None:
     The address is otherwise left exactly as written. Percent-encoding the
     spaces in it looks tidier and breaks it: radingasht answers the raw form
     and times out on the encoded one.
+
+    Example:
+        >>> from crawler.extraction.models import (
+        ...     ExtractedField, ExtractedRow, METHOD_HEURISTIC_HTML)
+        >>> row = ExtractedRow(fields={
+        ...     "hotel_image": ExtractedField("/a.jpg", METHOD_HEURISTIC_HTML),
+        ...     "hotel_images": ExtractedField(("/a.jpg", None, "/b.jpg"),
+        ...                                    METHOD_HEURISTIC_HTML)})
+        >>> page = ExtractedPage(url="https://x.com/tour/1", rows=[row])
+        >>> _absolute_hotel_images(page)
+        >>> row.fields["hotel_image"].value, row.fields["hotel_images"].value
+        ('https://x.com/a.jpg', ('https://x.com/a.jpg', None, 'https://x.com/b.jpg'))
     """
     for row in page.rows + page.expired_rows:
         field = row.fields.get("hotel_image")
         if field is not None and isinstance(field.value, str) and field.value:
             field.value = urljoin(page.url, field.value)
+        # The same for the picture each hotel of a multi-city stay carries. It
+        # arrives as a tuple beside the single one and was being left relative,
+        # which is 3287 of nahalgasht's and bisanseir's addresses.
+        every = row.fields.get("hotel_images")
+        if every is not None and isinstance(every.value, tuple):
+            every.value = tuple(
+                urljoin(page.url, one) if isinstance(one, str) and one else one
+                for one in every.value
+            )
 
 
 def _packages_and_rooms(rows: list) -> Optional[list[tuple[int, int]]]:
