@@ -39,6 +39,7 @@ from crawler.extraction.structure.hotel_block import (
     _clean,
     _looks_like_a_name,
     HotelBlock,
+    image_in_block,
     name_only,
     read_hotel_block,
 )
@@ -61,6 +62,7 @@ from crawler.extraction.readers.labels import (
     detect_nights,
     detect_room_type,
     detect_star_rating,
+    rooms_in_order,
 )
 from crawler.extraction.readers.prices import (
     PriceText,
@@ -396,13 +398,25 @@ def map_rows(container: RowContainer) -> list[ExtractedRow]:
         _apply_hotel_block(row, block)
         if index < len(container.members):
             _apply_attribute_dates(row, container.members[index])
+            # A row that is the whole offer carries its own photograph, and
+            # there is no block above it to read one from: vanrosh writes each
+            # hotel as one line with its picture beside it, and all 21 of its
+            # Armenia hotels went out with none.
+            if "hotel_image" not in row.fields:
+                picture = image_in_block(container.members[index])
+                if picture:
+                    row.fields["hotel_image"] = ExtractedField(
+                        picture, METHOD_HEURISTIC_HTML, _ROW_TEXT_SCOPE
+                    )
+                    row.attempts.pop("hotel_image", None)
         if "room_type" not in row.fields and index < len(headings):
             row.fields["room_type"] = ExtractedField(
                 headings[index], METHOD_HEURISTIC_HTML, _HEADING_ROW_SCOPE
             )
             row.attempts.pop("room_type", None)
             row.unresolved_fields = unresolved(row.fields, ROW_FIELDS)
-        rows.extend(_split_by_length(row, text))
+        for part in _split_by_room(row, text):
+            rows.extend(_split_by_length(part, text))
     return rows
 
 
@@ -443,6 +457,77 @@ def _split_by_length(row: ExtractedRow, text: str) -> list[ExtractedRow]:
         copy = deepcopy(row)
         copy.fields["nights"] = ExtractedField(
             nights, METHOD_HEURISTIC_HTML, _ROW_TEXT_SCOPE
+        )
+        copy.fields["price"] = ExtractedField(
+            _price_value(price, None), METHOD_HEURISTIC_HTML, _ROW_TEXT_SCOPE
+        )
+        copy.unresolved_fields = unresolved(copy.fields, ROW_FIELDS)
+        out.append(copy)
+    return out
+
+
+def _split_by_room(row: ExtractedRow, text: str) -> list[ExtractedRow]:
+    """One row per room, where a card writes its whole rates table into one line.
+
+    vanrosh sells its Armenia tour as a line per hotel — "هتل 3 ستاره (B.B)
+    ALBA HOTEL دوتخته ۷۶٬۹۹۰٬۰۰۰ تومان یک تخته ۱۰۶٬۹۹۰٬۰۰۰ تومان کودک با تخت
+    ۶۰٬۱۹۰٬۰۰۰ تومان کودک بدون تخت ۴۴٬۸۹۰٬۰۰۰ تومان" — and read as one row it
+    kept the first price, called it the last label's room, and glued the start
+    of "دوتخته" onto the hotel's name. Three of the four fares were lost and
+    the one that survived was filed under the wrong bed.
+
+    Split only where the labels leave no room to pair them wrongly: two or more
+    of them, all different, exactly as many prices as labels, and each price
+    standing after its own label and before the next. A line that merely
+    mentions a room type once is one row, and a price written in two parts —
+    nahalgasht's "225دلار+ 149,900,000تومان" — names no second room and is left
+    alone.
+
+    Example:
+        >>> line = ("هتل 3 ستاره (B.B) ALBA HOTEL دوتخته 76,990,000 تومان "
+        ...         "یک تخته 106,990,000 تومان")
+        >>> out = _split_by_room(map_row_text(line), line)
+        >>> [(r.fields["room_type"].value, r.fields["price"].value["amount"])
+        ...  for r in out]
+        [('double', 76990000.0), ('single', 106990000.0)]
+        >>> out[0].fields["hotel_name"].value
+        'هتل ALBA HOTEL'
+        >>> len(_split_by_room(map_row_text("دو تخته 92,000,000 تومان"),
+        ...                    "دو تخته 92,000,000 تومان"))
+        1
+    """
+    labels = rooms_in_order(text)
+    prices = find_prices(text)
+    if len(labels) < 2 or len(labels) != len(prices):
+        return [row]
+    if len({room for _, _, room in labels}) != len(labels):
+        return [row]
+
+    bounds = [start for start, _, _ in labels] + [len(text)]
+    for index, (_, end, _) in enumerate(labels):
+        price = prices[index]
+        if not end <= price.start < bounds[index + 1]:
+            return [row]
+
+    # What stands before the first label describes the stay, not a room: the
+    # hotel's name, its grade and its board. Read again without the table, so
+    # the name no longer carries the first label's opening word.
+    head = text[: bounds[0]].strip()
+    # name_only rather than the row reader: that one ends a name at the first
+    # digit, and here the grade stands before it — "هتل 3 ستاره (B.B) PRIMER"
+    # left nothing but the word "هتل" for every hotel whose name does not
+    # happen to carry one of our lodging words.
+    named = name_only(head) if head and _looks_like_a_name(head) else ""
+    out: list[ExtractedRow] = []
+    for (_, _, room), price in zip(labels, prices):
+        copy = deepcopy(row)
+        if named:
+            copy.fields["hotel_name"] = ExtractedField(
+                named, METHOD_HEURISTIC_HTML, _ROW_TEXT_SCOPE
+            )
+            copy.attempts.pop("hotel_name", None)
+        copy.fields["room_type"] = ExtractedField(
+            room, METHOD_HEURISTIC_HTML, _ROW_TEXT_SCOPE
         )
         copy.fields["price"] = ExtractedField(
             _price_value(price, None), METHOD_HEURISTIC_HTML, _ROW_TEXT_SCOPE

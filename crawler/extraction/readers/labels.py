@@ -189,6 +189,36 @@ _BOARD_WORDS: tuple[tuple[re.Pattern, str], ...] = (
 )
 
 
+def rooms_in_order(text: str) -> list[tuple[int, int, str]]:
+    """Every room label a text names, where each starts and ends, left to right.
+
+    Told apart from :func:`detect_room_type`, which answers what one fragment
+    is about. A card that writes its whole rates table into one string names
+    several, and pairing them with the prices needs to know where each sits.
+
+    Overlapping spellings answer once: "کودک با تخت" is one label, not a child
+    label and a bed label.
+
+    Example:
+        >>> [room for _, _, room in rooms_in_order(
+        ...     "دوتخته 76,990,000 تومان یک تخته 106,990,000 تومان")]
+        ['double', 'single']
+        >>> rooms_in_order("هتل آرگ 4 ستاره")
+        []
+    """
+    found: list[tuple[int, int, str]] = []
+    taken: set[int] = set()
+    normalized = normalize_digits(text)
+    for pattern, room in _ROOM_RE:
+        for match in pattern.finditer(normalized):
+            span = set(range(match.start(), match.end()))
+            if span & taken:
+                continue
+            taken |= span
+            found.append((match.start(), match.end(), room))
+    return sorted(found)
+
+
 def detect_room_type(text: str) -> Optional[str]:
     """Read which occupancy a row is priced for.
 
